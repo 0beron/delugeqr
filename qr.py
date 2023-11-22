@@ -3,12 +3,13 @@ import numpy as np
 import math
 import sys
 
+from dataclasses import dataclass
 
 
 def kpdst(kp1, kp2):
     dx = kp1.pt[0]-kp2.pt[0]
     dy = kp1.pt[1]-kp2.pt[1]
-    return math.sqrt(dx*dx + dy*dy)
+    return round(math.sqrt(dx*dx + dy*dy), 2)
 
 def update_xrange(low, hi, i, kp, dstmax):
     while(kp[i].pt[0] - kp[low].pt[0] > dstmax):
@@ -17,6 +18,13 @@ def update_xrange(low, hi, i, kp, dstmax):
         hi += 1
     return low, hi
 
+@dataclass
+class Keypoint:
+
+    kp: object
+    neighbours: list[int]
+    dists: list[float]
+    
 
 def threshold_erode(im, thr):
     kernel3 = np.ones((3,3),np.uint8)
@@ -26,18 +34,17 @@ def threshold_erode(im, thr):
     im2 = cv.GaussianBlur(im,(7,7),0)
     im2 = cv.adaptiveThreshold(im2, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 59, 0)
     im2 = cv.medianBlur(im2,3)
-
     
-    cv.imshow("Dotsmax_at", im2)
+    #cv.imshow("Dotsmax_at", im2)
    
     im2 = cv.dilate(im2, kernel3, 1)
-    cv.imshow("Dotsmax_d", im2)
+    #cv.imshow("Dotsmax_d", im2)
     im2 = cv.erode(im2, kernel3, 1)
-    cv.imshow("Dotsmax_de", im2)
+    #cv.imshow("Dotsmax_de", im2)
     im2 = cv.dilate(im2, kernel7, 1)
-    cv.imshow("Dotsmax_ded", im2)
+    #cv.imshow("Dotsmax_ded", im2)
     im2 = cv.erode(im2, kernel3, 1)
-    cv.imshow("Dotsmax_de", im2)
+    #cv.imshow("Dotsmax_de", im2)
     im2 = cv.dilate(im2, kernel3, 1)
     cv.imshow("Dotsmax_dedd", im2)
 
@@ -99,11 +106,26 @@ def reject_silk_screen(im, bwmin, bwmax):
         print(t, len(blobs))
         break
     return bmax
-    
+
+def nearby_points(skp, maxd):
+    low = 0
+    hi = 0
+    n = len(skp)
+    for i in range(n):
+        low, hi = update_xrange(low, hi, i, skp, maxd)
+        d = 1e9
+        jlist = []
+        dlist = []
+        for j in range(low, min(hi, n)):
+            if i==j:
+                continue
+            if abs(skp[i].pt[1] - skp[j].pt[1]) < maxd:
+                jlist.append(j)
+                dlist.append(kpdst(skp[i], skp[j]))
+        yield (i, jlist, dlist)
+
 def deluge_qr(imgfilename, dbg=1):
     # Setup SimpleBlobDetector parameters.
-
-
     imc = cv.imread(imgfilename)
    
     # Re-read as greyscale and invert
@@ -139,21 +161,24 @@ def deluge_qr(imgfilename, dbg=1):
 
     # Find the median distance between blobs - this should approximate
     # the pitch of the deluge key matrix
-    dsts = []
+    all_dsts = []
 
     bris = []
     cols = []
 
-    for i in range(n):
-        low, hi = update_xrange(low, hi, i, skp, maxd)
-        d = w*2
-        for j in range(low, min(hi, n)):
-            if i==j:
-                continue
-            if abs(skp[i].pt[1] - skp[j].pt[1]) < maxd:
-                dst = kpdst(skp[i], skp[j])
-                d = min(d, dst)
-        dsts.append(d)
+    nkp = []
+    
+    for i, js, ds in nearby_points(skp, maxd):
+        nkp.append(Keypoint(skp[i], js,ds))
+        print (i, js, ds)
+        if len(ds) > 0:
+            all_dsts.append(min(ds))
+        else:
+            all_dsts.append(1e9)
+
+    print(nkp[0])
+            
+    dsts = [d for d in all_dsts if d < 1e9]
 
     if len(dsts) < 2:
         print("maxd too small to link blobs", maxd)
@@ -187,65 +212,73 @@ def deluge_qr(imgfilename, dbg=1):
     print(median_dist)
     cv.circle(imdbg, (int(skp[0].pt[0]), int(skp[0].pt[1])), int(maxd), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
 
-    for i in range(n):
-        low, hi = update_xrange(low, hi, i, skp, maxd)
-        d = w*2
-        nngh = 0
-        minpt = skp[i].pt
-        maxpt = skp[i].pt
-        bx = None
-        for j in range(low, min(hi, n)):
-            if i==j:
-                continue
-            if abs(skp[i].pt[1] - skp[j].pt[1]) < maxd:
-                dst = kpdst(skp[i], skp[j])
-                if (dst < maxd):
-                    nngh += 1
-                    minpt = (min(skp[j].pt[0], minpt[0]), min(skp[j].pt[1], minpt[1]))
-                    maxpt = (max(skp[j].pt[0], maxpt[0]), max(skp[j].pt[1], maxpt[1]))
-                d = min(d, dst)
-                bx = maxpt[0]-minpt[0]
-                by = maxpt[1]-minpt[1]
+#    for i in range(n):
+#        low, hi = update_xrange(low, hi, i, skp, maxd)
+#        d = w*2
+#        nngh = 0
+#        minpt = skp[i].pt
+#        maxpt = skp[i].pt
+#        bx = None
+#        for j in range(low, min(hi, n)):
+#            if i==j:
+#                continue
+#            if abs(skp[i].pt[1] - skp[j].pt[1]) < maxd:
+#                dst = kpdst(skp[i], skp[j])
+#                if (dst < maxd):
+#                    nngh += 1
+#                    minpt = (min(skp[j].pt[0], minpt[0]), min(skp[j].pt[1], minpt[1]))
+#                    maxpt = (max(skp[j].pt[0], maxpt[0]), max(skp[j].pt[1], maxpt[1]))
+#                d = min(d, dst)
+#                bx = maxpt[0]-minpt[0]
+#                by = maxpt[1]-minpt[1]###
 
-        if bx is not None:
-            kpa2.append((skp[i], d, nngh, bx, by))
-            if nngh > 6:
-                c = (0,0,255)
-            else:
-                c = (192,192,192)
-                
-            cv.putText(imdbg, str(nngh), (int(skp[i].pt[0]), int(skp[i].pt[1])), cv.FONT_HERSHEY_COMPLEX, 0.5, c)
+#        if bx is not None:
+#            kpa2.append((skp[i], d, nngh, bx, by))
+#            if nngh > 6:
+#                c = (0,0,255)
+#            else:
+#                c = (192,192,192)
 
     if dbg == 1:
         cv.circle(imdbg, (w//2,h//2), int(bwmin), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
         cv.circle(imdbg, (w//2,h//2), int(bwmax), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
             
-    if len(kpa2) == 0:
-        cv.imshow("Nothing", imdbg)
-        cv.waitKey(0)
-        sys.exit(1)
+#    if len(kpa2) == 0:
+#        cv.imshow("Nothing", imdbg)
+#        cv.waitKey(0)
+#        sys.exit(1)
             
         
-    kp, ds, ng, bxs, bys = zip(*kpa2)
+#    kp, ds, ng, bxs, bys = zip(*kpa2)
 
-    sz = [k.size for k in kp]
-    med = sz[len(sz)//2]
+#    sz = [k.size for k in nkp]
+#    med = sz[len(sz)//2]
 
     #for i in range(len(kpa2)):
     #    kp = kpa2[i]
     #    print(i, kp)
 
-    print(med*1.2)
-    
-    filtered_keypoints = [kp[0] for kp in kpa2 #if kp[1] < med*2.0 and
-           if kp[2] >= 7 ]# and
+#    print(med*1.2)
+
+    filtered_keypoints = [nk for nk in nkp if len(nk.neighbours) >= 7 ]# and
 #           kp[3] > med*1.2 and
 #           kp[4] > med*1.2]
 
-    imc = cv.drawKeypoints(imc, skp, np.array([]), (255,255,0), 0)
-    for i in range(n):
-        cv.circle(imc, (int(skp[i].pt[0]), int(skp[i].pt[1])), isz, (bris[i], bris[i], bris[i]), thickness=2, lineType=cv.LINE_AA)
+    #imc = cv.drawKeypoints(imc, skp, np.array([]), (255,255,0), 0)
+    #for i in range(n):
+    #    cv.circle(imc, (int(skp[i].pt[0]), int(skp[i].pt[1])), isz, (bris[i], bris[i], bris[i]), thickness=2, lineType=cv.LINE_AA)
 
+    for kp in filtered_keypoints:
+        x = int(kp.kp.pt[0])
+        y = int(kp.kp.pt[1])
+        nngh = len(kp.neighbours)
+        if nngh > 6:
+            c = (0,0,255)
+        else:
+            c = (192,192,192)
+        cv.putText(imdbg, str(nngh), (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.5, c)
+
+    filtered_keypoints = [nk.kp for nk in nkp if len(nk.neighbours) >= 7 ]
     imc = cv.drawKeypoints(imc, filtered_keypoints, np.array([]), (0,0,255), cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
     
     if len(filtered_keypoints) < 4:
