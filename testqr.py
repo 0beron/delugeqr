@@ -43,7 +43,8 @@ class SimpleTestCase(unittest.TestCase):
     def testqr7(self): 
         """Test case QR7"""
         assert qr.deluge_qr("qr7.jpg", dbg=0) == [0x2108beec, 0x2008be78, 0x201187d0, 0x200df25c, 0xf965]
-
+        assert qr.deluge_qr("qr8.jpg", dbg=0) == [0x2108beec, 0x2008be78, 0x201187d0, 0x200df25c, 0xf965]
+        assert qr.deluge_qr("qr9.jpg", dbg=0) == [0x2108beec, 0x2008be78, 0x201187d0, 0x200df25c, 0xf965]
 
 if __name__ == "__main__":
     unittest.main() # run all tests

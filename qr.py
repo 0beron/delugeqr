@@ -26,6 +26,9 @@ class Keypoint:
     dists: list[float]
     valid: bool = True
 
+    def ixy(self):
+        return (int(self.kp.pt[0]), int(self.kp.pt[1]))
+    
 def threshold_erode(im, thr):
     kernel3 = np.ones((3,3),np.uint8)
     kernel7 = np.ones((7,7),np.uint8)
@@ -93,6 +96,28 @@ def find_blobs(im, bwmin, bwmax, binary=False):
     keypoints = detector.detect(im)
     return keypoints
 
+def point_is_gridlike(nkp, kp):
+    if len(kp.neighbours) < 4:
+        return False
+    x,y = kp.ixy()
+    dvs = []
+    for i in range(4):
+        x2,y2 = nkp[kp.neighbours[i]].ixy()
+        dv = [x2-x,y2-y]
+        dv = [d / math.sqrt(np.dot(dv,dv)) for d in dv]
+        dvs.append(dv)
+
+    dts = []
+    for i in range(3):
+        dts.append(np.dot(dvs[i], dvs[3]))
+    dts.sort()
+    tol = 0.2
+    if abs(-1.0 - dts[0]) < tol and abs(dts[1])< tol and abs(dts[2])<tol:
+        print(dts)
+        return True
+    else:
+        return False
+
 def reject_silk_screen(im, bwmin, bwmax):
     mblobs = 0
     for t in range(10, 255, 10):
@@ -136,7 +161,6 @@ def draw(label, img, keypoints, strfunc):
 def deluge_qr(imgfilename, dbg=1):
     # Setup SimpleBlobDetector parameters.
     imc = cv.imread(imgfilename)
-   
     # Re-read as greyscale and invert
     im = cv.imread(imgfilename, cv.IMREAD_GRAYSCALE)
     im = (255-im)
@@ -151,7 +175,8 @@ def deluge_qr(imgfilename, dbg=1):
 
     imc = cv.resize(imc, (w, h), interpolation= cv.INTER_LINEAR)
     imdbg = cv.cvtColor(im, cv.COLOR_GRAY2BGR)
-   
+    imc_clean = imc.copy()
+    
     # Lower and upper bound on deluge button sizes, assuming the deluge takes up most of the frame.
     bwmax = max(w,h) // 20
     bwmin = bwmax // 3.5
@@ -201,11 +226,11 @@ def deluge_qr(imgfilename, dbg=1):
     median_size = [kp.size for kp in skp][n//2]
     isz = int(median_size)//3
 
-#    for kp in nkp:
-#        for i in range(len(kp.neighbours)-1,0,-1):
-#            if kp.dists[i] > median_size*3.5:
-#                del kp.dists[i]
-#                del kp.neighbours[i]
+    for kp in nkp:
+        for i in range(len(kp.neighbours)-1,0,-1):
+            if kp.dists[i] > median_dist*1.6:
+                del kp.dists[i]
+                del kp.neighbours[i]
 
     for kp in nkp:
         n7 = 0
@@ -217,6 +242,25 @@ def deluge_qr(imgfilename, dbg=1):
         else:
             kp.valid = False
 
+    for kp in nkp:
+        if len(kp.neighbours) == 0:
+            continue
+        zx = list(zip(kp.neighbours, kp.dists))
+        zx.sort(key=lambda x:x[1])
+        kp.neighbours, kp.dists = tuple(zip(*zx))
+
+        if point_is_gridlike(nkp, kp):
+            c = (0, 93, 255)
+        else:
+            c = (255, 192, 0)
+        print(kp)
+        x,y = kp.ixy()
+        if len(zx)>= 4:
+            for i in range(4):
+                x2,y2 = nkp[zx[i][0]].ixy()  
+                cv.line(imc, (x,y), (x2, y2), c, thickness=2, lineType=cv.LINE_AA)
+        
+            
     # Get colour / brightness values from
     # each keypoint by averaging out a small rectangle
     bris = []
@@ -227,7 +271,7 @@ def deluge_qr(imgfilename, dbg=1):
         im4 = im[y-isz:y+isz, x-isz:x+isz]
         bri = int(cv.mean(im4)[0])
         bris.append(bri)
-        im4 = imc[y-isz:y+isz, x-isz:x+isz]
+        im4 = imc_clean[y-isz:y+isz, x-isz:x+isz]
         col = [int(ii) for ii in cv.mean(im4)[:3]]
         cols.append(col)
 
