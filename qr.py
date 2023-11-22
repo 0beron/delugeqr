@@ -20,11 +20,11 @@ def update_xrange(low, hi, i, kp, dstmax):
 
 @dataclass
 class Keypoint:
-
+    i: int
     kp: object
     neighbours: list[int]
     dists: list[float]
-    
+    valid: bool = True
 
 def threshold_erode(im, thr):
     kernel3 = np.ones((3,3),np.uint8)
@@ -124,6 +124,15 @@ def nearby_points(skp, maxd):
                 dlist.append(kpdst(skp[i], skp[j]))
         yield (i, jlist, dlist)
 
+def draw(label, img, keypoints, strfunc):
+    img2 = img.copy()
+    img2 = (img2 // 2) + 126
+    for kp in keypoints:
+        x = int(kp.kp.pt[0])
+        y = int(kp.kp.pt[1])
+        cv.putText(img2, strfunc(kp), (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255))
+        cv.imshow(label, img2)
+        
 def deluge_qr(imgfilename, dbg=1):
     # Setup SimpleBlobDetector parameters.
     imc = cv.imread(imgfilename)
@@ -161,6 +170,8 @@ def deluge_qr(imgfilename, dbg=1):
 
     # Find the median distance between blobs - this should approximate
     # the pitch of the deluge key matrix
+
+    
     all_dsts = []
 
     bris = []
@@ -169,7 +180,7 @@ def deluge_qr(imgfilename, dbg=1):
     nkp = []
     
     for i, js, ds in nearby_points(skp, maxd):
-        nkp.append(Keypoint(skp[i], js,ds))
+        nkp.append(Keypoint(i, skp[i], js,ds))
         print (i, js, ds)
         if len(ds) > 0:
             all_dsts.append(min(ds))
@@ -189,6 +200,22 @@ def deluge_qr(imgfilename, dbg=1):
     median_dist = dsts[len(dsts)//2]
     median_size = [kp.size for kp in skp][n//2]
     isz = int(median_size)//3
+
+#    for kp in nkp:
+#        for i in range(len(kp.neighbours)-1,0,-1):
+#            if kp.dists[i] > median_size*3.5:
+#                del kp.dists[i]
+#                del kp.neighbours[i]
+
+    for kp in nkp:
+        n7 = 0
+        for i in kp.neighbours:
+            if len(nkp[i].neighbours) >= 7:
+                n7 += 1
+                if n7 > 2:
+                    break
+        else:
+            kp.valid = False
 
     # Get colour / brightness values from
     # each keypoint by averaging out a small rectangle
@@ -212,74 +239,21 @@ def deluge_qr(imgfilename, dbg=1):
     print(median_dist)
     cv.circle(imdbg, (int(skp[0].pt[0]), int(skp[0].pt[1])), int(maxd), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
 
-#    for i in range(n):
-#        low, hi = update_xrange(low, hi, i, skp, maxd)
-#        d = w*2
-#        nngh = 0
-#        minpt = skp[i].pt
-#        maxpt = skp[i].pt
-#        bx = None
-#        for j in range(low, min(hi, n)):
-#            if i==j:
-#                continue
-#            if abs(skp[i].pt[1] - skp[j].pt[1]) < maxd:
-#                dst = kpdst(skp[i], skp[j])
-#                if (dst < maxd):
-#                    nngh += 1
-#                    minpt = (min(skp[j].pt[0], minpt[0]), min(skp[j].pt[1], minpt[1]))
-#                    maxpt = (max(skp[j].pt[0], maxpt[0]), max(skp[j].pt[1], maxpt[1]))
-#                d = min(d, dst)
-#                bx = maxpt[0]-minpt[0]
-#                by = maxpt[1]-minpt[1]###
-
-#        if bx is not None:
-#            kpa2.append((skp[i], d, nngh, bx, by))
-#            if nngh > 6:
-#                c = (0,0,255)
-#            else:
-#                c = (192,192,192)
-
     if dbg == 1:
         cv.circle(imdbg, (w//2,h//2), int(bwmin), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
         cv.circle(imdbg, (w//2,h//2), int(bwmax), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
-            
-#    if len(kpa2) == 0:
-#        cv.imshow("Nothing", imdbg)
-#        cv.waitKey(0)
-#        sys.exit(1)
-            
-        
-#    kp, ds, ng, bxs, bys = zip(*kpa2)
+ 
+    filtered_keypoints = [nk for nk in nkp if len(nk.neighbours) >= 7 and nk.valid ]
 
-#    sz = [k.size for k in nkp]
-#    med = sz[len(sz)//2]
+    imc = cv.drawKeypoints(imc, skp, np.array([]), (255,255,0), 0)
+    for i in range(n):
+        cv.circle(imc, (int(skp[i].pt[0]), int(skp[i].pt[1])), isz, (bris[i], bris[i], bris[i]), thickness=2, lineType=cv.LINE_AA)
 
-    #for i in range(len(kpa2)):
-    #    kp = kpa2[i]
-    #    print(i, kp)
-
-#    print(med*1.2)
-
-    filtered_keypoints = [nk for nk in nkp if len(nk.neighbours) >= 7 ]# and
-#           kp[3] > med*1.2 and
-#           kp[4] > med*1.2]
-
-    #imc = cv.drawKeypoints(imc, skp, np.array([]), (255,255,0), 0)
-    #for i in range(n):
-    #    cv.circle(imc, (int(skp[i].pt[0]), int(skp[i].pt[1])), isz, (bris[i], bris[i], bris[i]), thickness=2, lineType=cv.LINE_AA)
-
-    for kp in filtered_keypoints:
-        x = int(kp.kp.pt[0])
-        y = int(kp.kp.pt[1])
-        nngh = len(kp.neighbours)
-        if nngh > 6:
-            c = (0,0,255)
-        else:
-            c = (192,192,192)
-        cv.putText(imdbg, str(nngh), (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.5, c)
-
-    filtered_keypoints = [nk.kp for nk in nkp if len(nk.neighbours) >= 7 ]
-    imc = cv.drawKeypoints(imc, filtered_keypoints, np.array([]), (0,0,255), cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    draw("nngh", imdbg, filtered_keypoints, lambda k:str(len(k.neighbours)))
+    draw("index", imdbg, nkp, lambda k:str(k.i))
+    
+    old_filtered_keypoints = [nk.kp for nk in nkp if len(nk.neighbours) >= 7 ]
+    imc = cv.drawKeypoints(imc, old_filtered_keypoints, np.array([]), (0,0,255), cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
     
     if len(filtered_keypoints) < 4:
         print("Too few blobs remained after filtering")
@@ -291,8 +265,8 @@ def deluge_qr(imgfilename, dbg=1):
         sys.exit(1)
 
     a_all = np.array([kp.pt for kp in skp])
-    a = np.array([kp.pt for kp in filtered_keypoints])
     
+    a = np.array([kp.kp.pt for kp in filtered_keypoints])
     ca = np.cov(a, y=None, rowvar = 0, bias= 1)
 
     v, vect = np.linalg.eig(ca)
