@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 import math
 import sys
-
+from statistics import mode
 from dataclasses import dataclass
 
 
@@ -25,6 +25,10 @@ class Keypoint:
     neighbours: list[int]
     dists: list[float]
     valid: bool = True
+    oriented: bool = False
+    u: int = None
+    v: int = None
+    group: int = None
 
     def ixy(self):
         return (int(self.kp.pt[0]), int(self.kp.pt[1]))
@@ -96,9 +100,7 @@ def find_blobs(im, bwmin, bwmax, binary=False):
     keypoints = detector.detect(im)
     return keypoints
 
-def point_is_gridlike(nkp, kp):
-    if len(kp.neighbours) < 4:
-        return False
+def get_cross_vectors(nkp, kp):
     x,y = kp.ixy()
     dvs = []
     for i in range(4):
@@ -106,6 +108,12 @@ def point_is_gridlike(nkp, kp):
         dv = [x2-x,y2-y]
         dv = [d / math.sqrt(np.dot(dv,dv)) for d in dv]
         dvs.append(dv)
+    return dvs
+
+def point_is_gridlike(nkp, kp):
+    if len(kp.neighbours) < 4:
+        return False
+    dvs = get_cross_vectors(nkp, kp)
 
     dts = []
     for i in range(3):
@@ -118,6 +126,31 @@ def point_is_gridlike(nkp, kp):
     else:
         return False
 
+def orient_to_grid(nkp, kp, tvect):
+    dvs = get_cross_vectors(nkp, kp)
+
+    dis = [-1000]*4
+    for i in range(4):
+        gdir = np.dot(dvs[i], tvect)
+        print(kp.i, gdir, dvs[i])
+        if abs(gdir[0]) > abs(gdir[1]):
+            # X
+            if gdir[0] > 0.0:
+                dis[0] = i
+            else:
+                dis[2] = i
+        else:
+            if gdir[1] > 0.0:
+                dis[1] = i
+            else:
+                dis[3] = i
+    if sum(dis) == 6:
+        kp.neighbours = [kp.neighbours[j] for j in dis]
+        print(kp.i, dis, kp.neighbours)
+        nkp[kp.i].oriented = True
+    else:
+        raise Exception("Grid like point failed to orient")
+    
 def reject_silk_screen(im, bwmin, bwmax):
     mblobs = 0
     for t in range(10, 255, 10):
@@ -131,6 +164,13 @@ def reject_silk_screen(im, bwmin, bwmax):
         print(t, len(blobs))
         break
     return bmax
+
+def build_grid(umin, umax, vmin,vmax):
+    nx, ny = (umax-umin+1, vmax-vmin+1)
+    x = np.linspace(umin, umax, nx)
+    y = np.linspace(vmin, vmax, ny)
+    mg = np.array(np.meshgrid(x,y)).T.reshape(-1, 2)
+    return mg
 
 def nearby_points(skp, maxd):
     low = 0
@@ -157,6 +197,13 @@ def draw(label, img, keypoints, strfunc):
         y = int(kp.kp.pt[1])
         cv.putText(img2, strfunc(kp), (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255))
         cv.imshow(label, img2)
+
+def draw_cross(img, x, y, tv):
+    x = int(x)
+    y = int(y)
+    cv.line(img, (x-int(tv[0][0]*40),y-int(tv[0][1]*40)), (x+int(tv[0][0]*40),y+int(tv[0][1]*40)), (0, 255, 0), thickness=4, lineType=cv.LINE_AA)
+    cv.line(img, (x-int(tv[1][0]*40),y-int(tv[1][1]*40)), (x+int(tv[1][0]*40),y+int(tv[1][1]*40)), (0, 255, 0), thickness=4, lineType=cv.LINE_AA)
+
         
 def deluge_qr(imgfilename, dbg=1):
     # Setup SimpleBlobDetector parameters.
@@ -242,6 +289,10 @@ def deluge_qr(imgfilename, dbg=1):
         else:
             kp.valid = False
 
+    gridpoints = []
+
+    grid_centroid = None
+    ng = 0
     for kp in nkp:
         if len(kp.neighbours) == 0:
             continue
@@ -251,16 +302,126 @@ def deluge_qr(imgfilename, dbg=1):
 
         if point_is_gridlike(nkp, kp):
             c = (0, 93, 255)
+            ng = ng + 1
+            if grid_centroid is None:
+                grid_centroid = [kp.kp.pt[0], kp.kp.pt[1]]
+            else:
+                grid_centroid[0] = grid_centroid[0] + kp.kp.pt[0]
+                grid_centroid[1] = grid_centroid[1] + kp.kp.pt[1]
+            gridpoints.append(kp)
         else:
             c = (255, 192, 0)
+        
         print(kp)
         x,y = kp.ixy()
         if len(zx)>= 4:
             for i in range(4):
                 x2,y2 = nkp[zx[i][0]].ixy()  
                 cv.line(imc, (x,y), (x2, y2), c, thickness=2, lineType=cv.LINE_AA)
+
+    grid_centroid[0] /= ng
+    grid_centroid[1] /= ng
+    print("GC", grid_centroid)
+
+    grida = np.array([kp.kp.pt for kp in gridpoints])
+    gridca = np.cov(grida, y=None, rowvar = 0, bias= 1)
+
+    v, vect = np.linalg.eig(gridca)
+    tvect = np.transpose(vect)
+
+    draw_cross(imc, grid_centroid[0], grid_centroid[1], tvect)
+
+    for kp in gridpoints:
+        orient_to_grid(nkp, kp, tvect)
+
+    fmax = 0
+    gpmax = -1
+    grp = 0
+    while True:
+        p0 = 0
+        nflood = 0
+        for gp in gridpoints:
+            if gp.u is None:
+                p0 = gp.i
+                break
+        else:
+            break
         
+        nkp[p0].u = 0
+        nkp[p0].v = 0
+
+        g = [p0]
+        more = True
+        i = 0
+        uinc = [1,0,-1,0]
+        vinc = [0,1,0,-1]
+        while i<len(g):
+            kp = nkp[g[i]]
+            print("G",g[i])
+            print(kp.oriented)
+            if kp.oriented:
+                for j in range(4):
+                    print("J",j)
+                    k = kp.neighbours[j]
+                    kp2 = nkp[k]
+                    if kp2.u is None and kp2.oriented:
+                        nflood = nflood + 1
+                        kp2.u = kp.u + uinc[j]
+                        kp2.v = kp.v + vinc[j]
+                        kp2.group = grp
+                        g.append(kp2.i)
+            i+=1
+        if nflood > fmax:
+            fmax = nflood
+            gpmax = p0
+            grpmax = grp
+        grp += 1
             
+    print("GPMAX:",gpmax)
+
+    draw("index2", imdbg, nkp, lambda k:str(k.v if k.u is not None else " "))
+
+    us = [kp.u for kp in nkp if kp.u is not None]
+    vs = [kp.v for kp in nkp if kp.v is not None]
+    minu = min(us)
+    minv = min(vs)
+
+    maxu = max(us)
+    maxv = max(vs)
+
+    midv = minv + (maxv-minv)//2
+    midu = minu + (maxu-minu)//2
+    
+    pmid = [kp for kp in nkp if kp.u == midu and kp.v == midv]
+
+    if len(pmid) == 0:
+        raise Exception("couldn't find middle")
+
+    print("PMID", pmid)
+
+    grppnts = [gp for gp in gridpoints if gp.group == grpmax]
+    corners = [min(grppnts, key=lambda k:k.u+k.v),
+               max(grppnts, key=lambda k:k.u-k.v),
+               max(grppnts, key=lambda k:k.u+k.v),
+               min(grppnts, key=lambda k:k.u-k.v)]
+
+    px_corners = [[kp.kp.pt[0], kp.kp.pt[1]] for kp in corners]
+    grid_corners = [[kp.u, kp.v] for kp in corners]
+    
+    hmg, status = cv.findHomography(np.array(px_corners), np.array(grid_corners), 0)
+    invh = np.linalg.pinv(hmg)
+
+    print("CORNERS:", corners)
+
+    mg = build_grid(minu,maxu,minv,maxv)
+
+    grid = cv.perspectiveTransform(np.array([mg]), invh)
+
+    for gp in grid[0]:
+        cv.circle(imc, (int(gp[0]), int(gp[1])), 7, (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
+
+    
+    
     # Get colour / brightness values from
     # each keypoint by averaging out a small rectangle
     bris = []
