@@ -4,14 +4,28 @@ import math
 import sys
 from statistics import mode
 from dataclasses import dataclass
-
+from bisect import *
 
 def kpdst(kp1, kp2):
-    dx = kp1.pt[0]-kp2.pt[0]
-    dy = kp1.pt[1]-kp2.pt[1]
+    """
+    Euclidean distance between 2 cv.KeyPoints
+    """
+    if type(kp1) == cv.KeyPoint:
+        dx = kp1.pt[0]-kp2.pt[0]
+        dy = kp1.pt[1]-kp2.pt[1]
+    else:
+        dx = kp1[0]-kp2.pt[0]
+        dy = kp1[1]-kp2.pt[1]
+      
     return round(math.sqrt(dx*dx + dy*dy), 2)
 
 def update_xrange(low, hi, i, kp, dstmax):
+    """
+    Updates the indices low and hi, to cover the range
+    of keypoints in kp that have X coordinate within dstmax of
+    the keypoitn at index i. The low index is inclusive, the
+    hi index is exclusive, ie one beyond the last point in range.
+    """
     while(kp[i].pt[0] - kp[low].pt[0] > dstmax):
         low += 1
     while(hi < len(kp) and kp[hi].pt[0] - kp[i].pt[0] < dstmax):
@@ -19,21 +33,35 @@ def update_xrange(low, hi, i, kp, dstmax):
     return low, hi
 
 @dataclass
-class Keypoint:
-    i: int
-    kp: object
-    neighbours: list[int]
-    dists: list[float]
-    valid: bool = True
-    oriented: bool = False
-    u: int = None
-    v: int = None
-    group: int = None
+class Padpoint:
+    """
+    Annotated points that attempt to represent the
+    Deluge button pad grid
+    """
+    i: int                   # index into full list of Padpoints
+    kp: object               # cv.KeyPoint found from the image 
+    neighbours: list[int]    # List of nearest neighbours
+    dists: list[float]       # Distances to neighbours
+    valid: bool = True       # 
+    oriented: bool = False   # If this padpoint has been oriented to the
+                             # suspected grid. If so it's first 4 neighbours
+                             # are now ordered +X, +Y, -X, -Y
+    u: int = None            # u coordinate on suspected grid
+    v: int = None            # v coordinate on suspected grid
+    group: int = None        # Contiguous group of points this padpoint was
+                             # discovered in.
 
     def ixy(self):
+        """
+        Get integer coords for easy drawing.
+        """
         return (int(self.kp.pt[0]), int(self.kp.pt[1]))
     
 def threshold_erode(im, thr):
+    """
+    Adaptive thresholding and erosion/dilation to find thresholded
+    blobs that identify the pad grid.
+    """
     kernel3 = np.ones((3,3),np.uint8)
     kernel7 = np.ones((7,7),np.uint8)
     #r, im2 = cv.threshold(im, thr, 255, cv.THRESH_BINARY)
@@ -58,6 +86,10 @@ def threshold_erode(im, thr):
     return im2
 
 def find_blobs(im, bwmin, bwmax, binary=False):
+    """
+    Finds black blobs in the thresholded image, to detect the
+    coordinates of the button pads.
+    """
     params = cv.SimpleBlobDetector_Params()
     # Change thresholds
 
@@ -100,17 +132,27 @@ def find_blobs(im, bwmin, bwmax, binary=False):
     keypoints = detector.detect(im)
     return keypoints
 
-def get_cross_vectors(nkp, kp):
-    x,y = kp.ixy()
+def get_cross_vectors(nkp, pp):
+    """
+    For the 4 closest neighbours to padpoint pp, return
+    a list of 4 unit vectors pointing at them from pp.
+    """
+    x,y = pp.ixy()
     dvs = []
     for i in range(4):
-        x2,y2 = nkp[kp.neighbours[i]].ixy()
+        x2,y2 = nkp[pp.neighbours[i]].ixy()
         dv = [x2-x,y2-y]
         dv = [d / math.sqrt(np.dot(dv,dv)) for d in dv]
         dvs.append(dv)
     return dvs
 
 def point_is_gridlike(nkp, kp):
+    """
+    Determines if a padpoint look 'gridlike'. It's 4 closes
+    neighbours should form vectors that form a cross. Build the
+    vectors and label it gridlike if the 1st vector has two others
+    at right angles to it and another pointing in the opposing direction.
+    """
     if len(kp.neighbours) < 4:
         return False
     dvs = get_cross_vectors(nkp, kp)
@@ -121,12 +163,17 @@ def point_is_gridlike(nkp, kp):
     dts.sort()
     tol = 0.2
     if abs(-1.0 - dts[0]) < tol and abs(dts[1])< tol and abs(dts[2])<tol:
-        print(dts)
+        #print(dts)
         return True
     else:
         return False
 
 def orient_to_grid(nkp, kp, tvect):
+    """
+    Orients a padpoint to the basis given in tvect.
+    This sorts the 1st 4 neighbours into the order
+    +U, +V, -U, -V
+    """
     dvs = get_cross_vectors(nkp, kp)
 
     dis = [-1000]*4
@@ -134,12 +181,13 @@ def orient_to_grid(nkp, kp, tvect):
         gdir = np.dot(dvs[i], tvect)
         print(kp.i, gdir, dvs[i])
         if abs(gdir[0]) > abs(gdir[1]):
-            # X
+            # U
             if gdir[0] > 0.0:
                 dis[0] = i
             else:
                 dis[2] = i
         else:
+            # V
             if gdir[1] > 0.0:
                 dis[1] = i
             else:
@@ -158,7 +206,6 @@ def reject_silk_screen(im, bwmin, bwmax):
         blobs = find_blobs(dots, bwmin, bwmax, binary=True)
         if len(blobs) > mblobs:
             mblobs = len(blobs)
-            print("mmmm ", t)
             imblobs = dots
             bmax = blobs
         print(t, len(blobs))
@@ -169,7 +216,7 @@ def build_grid(umin, umax, vmin,vmax):
     nx, ny = (umax-umin+1, vmax-vmin+1)
     x = np.linspace(umin, umax, nx)
     y = np.linspace(vmin, vmax, ny)
-    mg = np.array(np.meshgrid(x,y)).T.reshape(-1, 2)
+    mg = np.array(np.meshgrid(x,y)).T
     return mg
 
 def nearby_points(skp, maxd):
@@ -188,6 +235,102 @@ def nearby_points(skp, maxd):
                 jlist.append(j)
                 dlist.append(kpdst(skp[i], skp[j]))
         yield (i, jlist, dlist)
+        
+def nearest_keypoint(coord, skp, maxd):
+    #print(coord, maxd)
+
+    low = bisect_right(skp, coord[0]-maxd, key=lambda k:k.pt[0])
+    hi = bisect_left(skp, coord[0]+maxd, key=lambda k:k.pt[0])
+    dmin = 10000
+
+    ret = None
+    d = None
+    for j in range(low, hi):
+        if abs(coord[1] - skp[j].pt[1]) < maxd:
+            d = kpdst(coord, skp[j])
+            if d < dmin:
+                dmin = d
+                ret = skp[j]
+#    print("------")
+#    print(coord, "--->")
+
+    return dmin, ret
+
+            
+def label_grid_points(nkp, imc):
+    gridpoints = []
+
+    #grid_centroid = None
+    ng = 0
+    for kp in nkp:
+        if len(kp.neighbours) == 0:
+            continue
+        zx = list(zip(kp.neighbours, kp.dists))
+        zx.sort(key=lambda x:x[1])
+        kp.neighbours, kp.dists = tuple(zip(*zx))
+
+        if point_is_gridlike(nkp, kp):
+            c = (0, 93, 255)
+            ng = ng + 1
+            #if grid_centroid is None:
+            #    grid_centroid = [kp.kp.pt[0], kp.kp.pt[1]]
+            #else:
+            #    grid_centroid[0] = grid_centroid[0] + kp.kp.pt[0]
+            #    grid_centroid[1] = grid_centroid[1] + kp.kp.pt[1]
+            gridpoints.append(kp)
+        else:
+            c = (255, 192, 0)
+        
+        print(kp)
+        x,y = kp.ixy()
+        if len(zx)>= 4:
+            for i in range(4):
+                x2,y2 = nkp[zx[i][0]].ixy()  
+                cv.line(imc, (x,y), (x2, y2), c, thickness=2, lineType=cv.LINE_AA)
+    return gridpoints
+
+def flood_fill_uv_grid(nkp, gridpoints):
+    fmax = 0
+    gpmax = -1
+    grp = 0
+    while True:
+        p0 = 0
+        nflood = 0
+        for gp in gridpoints:
+            if gp.u is None:
+                p0 = gp.i
+                break
+        else:
+            break
+        
+        nkp[p0].u = 0
+        nkp[p0].v = 0
+
+        g = [p0]
+        more = True
+        i = 0
+        uinc = [1,0,-1,0]
+        vinc = [0,1,0,-1]
+        while i<len(g):
+            kp = nkp[g[i]]
+            if kp.oriented:
+                for j in range(4):
+                    k = kp.neighbours[j]
+                    kp2 = nkp[k]
+                    if kp2.u is None and kp2.oriented:
+                        nflood = nflood + 1
+                        kp2.u = kp.u + uinc[j]
+                        kp2.v = kp.v + vinc[j]
+                        kp2.group = grp
+                        g.append(kp2.i)
+            i+=1
+        if nflood > fmax:
+            fmax = nflood
+            gpmax = p0
+            grpmax = grp
+        grp += 1
+    return grpmax
+    print("GPMAX:",gpmax)
 
 def draw(label, img, keypoints, strfunc):
     img2 = img.copy()
@@ -242,8 +385,6 @@ def deluge_qr(imgfilename, dbg=1):
 
     # Find the median distance between blobs - this should approximate
     # the pitch of the deluge key matrix
-
-    
     all_dsts = []
 
     bris = []
@@ -252,7 +393,7 @@ def deluge_qr(imgfilename, dbg=1):
     nkp = []
     
     for i, js, ds in nearby_points(skp, maxd):
-        nkp.append(Keypoint(i, skp[i], js,ds))
+        nkp.append(Padpoint(i, skp[i], js,ds))
         print (i, js, ds)
         if len(ds) > 0:
             all_dsts.append(min(ds))
@@ -273,12 +414,14 @@ def deluge_qr(imgfilename, dbg=1):
     median_size = [kp.size for kp in skp][n//2]
     isz = int(median_size)//3
 
+    print(len(nkp))
+
     for kp in nkp:
         for i in range(len(kp.neighbours)-1,0,-1):
             if kp.dists[i] > median_dist*1.6:
                 del kp.dists[i]
                 del kp.neighbours[i]
-
+    print(len(nkp))
     for kp in nkp:
         n7 = 0
         for i in kp.neighbours:
@@ -288,96 +431,26 @@ def deluge_qr(imgfilename, dbg=1):
                     break
         else:
             kp.valid = False
+    print(len(nkp))
+    gridpoints = label_grid_points(nkp, imc)
+    #grid_centroid[0] /= ng
+    #grid_centroid[1] /= ng
+    #print("GC", grid_centroid)
 
-    gridpoints = []
-
-    grid_centroid = None
-    ng = 0
-    for kp in nkp:
-        if len(kp.neighbours) == 0:
-            continue
-        zx = list(zip(kp.neighbours, kp.dists))
-        zx.sort(key=lambda x:x[1])
-        kp.neighbours, kp.dists = tuple(zip(*zx))
-
-        if point_is_gridlike(nkp, kp):
-            c = (0, 93, 255)
-            ng = ng + 1
-            if grid_centroid is None:
-                grid_centroid = [kp.kp.pt[0], kp.kp.pt[1]]
-            else:
-                grid_centroid[0] = grid_centroid[0] + kp.kp.pt[0]
-                grid_centroid[1] = grid_centroid[1] + kp.kp.pt[1]
-            gridpoints.append(kp)
-        else:
-            c = (255, 192, 0)
-        
-        print(kp)
-        x,y = kp.ixy()
-        if len(zx)>= 4:
-            for i in range(4):
-                x2,y2 = nkp[zx[i][0]].ixy()  
-                cv.line(imc, (x,y), (x2, y2), c, thickness=2, lineType=cv.LINE_AA)
-
-    grid_centroid[0] /= ng
-    grid_centroid[1] /= ng
-    print("GC", grid_centroid)
-
+    print(gridpoints)
+    
     grida = np.array([kp.kp.pt for kp in gridpoints])
     gridca = np.cov(grida, y=None, rowvar = 0, bias= 1)
 
     v, vect = np.linalg.eig(gridca)
     tvect = np.transpose(vect)
 
-    draw_cross(imc, grid_centroid[0], grid_centroid[1], tvect)
+    #draw_cross(imc, grid_centroid[0], grid_centroid[1], tvect)
 
     for kp in gridpoints:
         orient_to_grid(nkp, kp, tvect)
 
-    fmax = 0
-    gpmax = -1
-    grp = 0
-    while True:
-        p0 = 0
-        nflood = 0
-        for gp in gridpoints:
-            if gp.u is None:
-                p0 = gp.i
-                break
-        else:
-            break
-        
-        nkp[p0].u = 0
-        nkp[p0].v = 0
-
-        g = [p0]
-        more = True
-        i = 0
-        uinc = [1,0,-1,0]
-        vinc = [0,1,0,-1]
-        while i<len(g):
-            kp = nkp[g[i]]
-            print("G",g[i])
-            print(kp.oriented)
-            if kp.oriented:
-                for j in range(4):
-                    print("J",j)
-                    k = kp.neighbours[j]
-                    kp2 = nkp[k]
-                    if kp2.u is None and kp2.oriented:
-                        nflood = nflood + 1
-                        kp2.u = kp.u + uinc[j]
-                        kp2.v = kp.v + vinc[j]
-                        kp2.group = grp
-                        g.append(kp2.i)
-            i+=1
-        if nflood > fmax:
-            fmax = nflood
-            gpmax = p0
-            grpmax = grp
-        grp += 1
-            
-    print("GPMAX:",gpmax)
+    grpmax = flood_fill_uv_grid(nkp, gridpoints)
 
     draw("index2", imdbg, nkp, lambda k:str(k.v if k.u is not None else " "))
 
@@ -413,14 +486,108 @@ def deluge_qr(imgfilename, dbg=1):
 
     print("CORNERS:", corners)
 
-    mg = build_grid(minu,maxu,minv,maxv)
+    uwid = (maxu-minu)
+    vwid = (maxv-minv)
 
-    grid = cv.perspectiveTransform(np.array([mg]), invh)
+    missing_u = 15-uwid
+    missing_v = 15-vwid
 
-    for gp in grid[0]:
-        cv.circle(imc, (int(gp[0]), int(gp[1])), 7, (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
+    mg = build_grid(minu-missing_u,maxu+missing_u,minv-missing_v,maxv+missing_v)
+    shape = mg.shape
+    print(mg.shape)    
+    grid = cv.perspectiveTransform(np.array([mg.reshape((-1,2))]), invh).reshape(shape)
 
+    print(grid.shape)
+
+    nx,ny,uv = grid.shape
+
+    maxu -= int(mg[0][0][0])
+    maxv -= int(mg[0][0][1])
+    minu -= int(mg[0][0][0])
+    minv -= int(mg[0][0][1])
     
+    for i in range(nx):
+        for j in range(ny):
+            cv.circle(imc, (int(grid[i][j][0]), int(grid[i][j][1])), 7, (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
+    for i in range(minu, maxu+1):
+        for j in range(minv, maxv+1):
+            cv.circle(imc, (int(grid[i][j][0]), int(grid[i][j][1])), 7, (0, 92, 255), thickness=4, lineType=cv.LINE_AA)
+
+    print("GRIDSHAPE",grid.shape)
+
+    print(mg[0][0])
+    print(grid[0][0])
+    
+    limits = [maxu, maxv, minu, minv]
+    expand = [1,1,-1,-1]
+    steps = [-1, -1, 1, 1]
+    stop = [False]*4
+    good = [-1,-1,-1,-1]
+    
+    while not all(stop):
+        expansion = [0]*4
+
+        print("LIMITS:", limits)
+        if limits[0]-limits[2] > 7:
+            if limits[1]-limits[3] > 6:
+                stop[1] = True
+                stop[3] = True
+            if limits[0]-limits[2] > 14:
+                stop[0] = True
+                stop[2] = True
+
+        if limits[1]-limits[3] > 7:
+            if limits[0]-limits[2] > 6:
+                stop[0] = True
+                stop[2] = True
+            if limits[1]-limits[3] > 14:
+                stop[1] = True
+                stop[3] = True
+
+        print("STOP:", stop)
+                
+        i = 0
+        while min(good) < 0:
+            print(good, stop)
+            if good[i] > 0:
+                i+=1
+                continue
+            if stop[i]:
+                good[i] = 0
+                i+=1
+                continue
+            l1 = limits[(i+1)%4]
+            l2 = limits[(i+3)%4]
+            start = min(l1,l2)
+            end = max(l1,l2)
+            cc2 = limits[i] + expand[i]
+
+            ngood = 0
+            for j in range(start, end+1):
+                if i%2 == 0:
+                    d, ikp = nearest_keypoint(grid[cc2][j], skp, maxd)
+                else:
+                    d, ikp = nearest_keypoint(grid[j][cc2], skp, maxd)
+                if d < maxd/5.0:
+                    ngood = ngood + 1
+            good[i] = ngood
+            print(l1,l2,start,end,cc2,ngood)
+            i += 1
+            
+        iex = np.argmax(good)
+        if not stop[iex]:
+            print("GOOD:",good)
+            print("IEX:", iex)
+
+            limits[iex] += expand[iex]
+        good[iex] = -1
+    print(limits)
+
+    maxu, maxv, minu, minv = tuple(limits)
+    for i in range(minu, maxu+1):
+        for j in range(minv, maxv+1):
+            cv.circle(imc, (int(grid[i][j][0]), int(grid[i][j][1])),
+                      7, (255, 123, 0), thickness=4, lineType=cv.LINE_AA)
     
     # Get colour / brightness values from
     # each keypoint by averaging out a small rectangle
@@ -441,7 +608,7 @@ def deluge_qr(imgfilename, dbg=1):
     low = 0
     hi = 0
 
-    print(median_dist)
+    #print(median_dist)
     cv.circle(imdbg, (int(skp[0].pt[0]), int(skp[0].pt[1])), int(maxd), (0, 0, 255), thickness=2, lineType=cv.LINE_AA)
 
     if dbg == 1:
