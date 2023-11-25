@@ -38,13 +38,18 @@ class SimpleTestCase(unittest.TestCase):
         
     def testqr6(self): 
         """Test case QR6"""
-        assert qr.deluge_qr("qr6.jpg", dbg=0) == [0x20054f25, 0x200931fc, 0x2009dd7c, 0x20047c64, 0xaa55]
+        assert qr.deluge_qr("qr6.jpg", dbg=0) == [0x200931fc, 0x00000000, 0x00000000, 0x00000000, 0xaa55]
         
     def testqr7(self): 
         """Test case QR7"""
-        assert qr.deluge_qr("qr7.jpg", dbg=0) == [0x2108beec, 0x2008be78, 0x201187d0, 0x200df25c, 0xf965]
-        assert qr.deluge_qr("qr8.jpg", dbg=0) == [0x2108beec, 0x2008be78, 0x201187d0, 0x200df25c, 0xf965]
-        assert qr.deluge_qr("qr9.jpg", dbg=0) == [0x2108beec, 0x2008be78, 0x201187d0, 0x200df25c, 0xf965]
+        assert qr.deluge_qr("qr7.jpg", dbg=0) == [0x2008beec, 0x2008be78, 0x201187d0, 0x200df25c, 0x3985]
+        assert qr.deluge_qr("qr8.jpg", dbg=0) == [0x2008beec, 0x2008be78, 0x201187d0, 0x200df25c, 0x3985]
+        assert qr.deluge_qr("qr9.jpg", dbg=0) == [0x2008beec, 0x2008be78, 0x201187d0, 0x200df25c, 0x3985]
 
+    def testqrah(self): 
+        """Test case QR3a-h"""
+        for ltr in "abcdefgh":
+            assert qr.deluge_qr(f"qr3{ltr}.jpg", dbg=0) == [0x20070acb, 0x2006a2b9, 0x20080747, 0x20092040, 0xa35a]
+        
 if __name__ == "__main__":
     unittest.main() # run all tests

@@ -141,7 +141,6 @@ def reject_silk_screen(im, bwmin, bwmax):
             mblobs = len(blobs)
             imblobs = dots
             bmax = blobs
-        print(t, len(blobs))
         break
     return bmax
 
@@ -233,7 +232,6 @@ def label_grid_points(pads, imc):
         else:
             c = (255, 192, 0)
         
-        print(kp)
         x,y = kp.ixy()
         if len(zx)>= 4:
             for i in range(4):
@@ -273,7 +271,6 @@ def point_is_gridlike(pads, kp):
     dts.sort()
     tol = 0.2
     if abs(-1.0 - dts[0]) < tol and abs(dts[1])< tol and abs(dts[2])<tol:
-        #print(dts)
         return True
     else:
         return False
@@ -287,9 +284,10 @@ def orient_to_grid(pads, kp, tvect):
     dvs = get_cross_vectors(pads, kp)
 
     dis = [-1000]*4
+    print(dvs)
     for i in range(4):
         gdir = np.dot(dvs[i], tvect)
-        print(kp.i, gdir, dvs[i])
+        print(gdir)
         if abs(gdir[0]) > abs(gdir[1]):
             # U
             if gdir[0] > 0.0:
@@ -304,9 +302,10 @@ def orient_to_grid(pads, kp, tvect):
                 dis[3] = i
     if sum(dis) == 6:
         kp.neighbours = [kp.neighbours[j] for j in dis]
-        print(kp.i, dis, kp.neighbours)
         pads[kp.i].oriented = True
     else:
+        print(kp, kp.neighbours, dis, gdir)
+
         raise Exception("Grid like point failed to orient")
     
 
@@ -357,7 +356,6 @@ def flood_fill_uv_grid(pads, gridpads):
             grpmax = grp
         grp += 1
     return grpmax
-    print("GPMAX:",gpmax)
 
 def expand_grid(limits, grid, skp, maxd):
     """
@@ -392,7 +390,6 @@ def expand_grid(limits, grid, skp, maxd):
                 
         i = 0
         while min(good) < 0:
-            print(good, stop)
             if good[i] > 0:
                 i+=1
                 continue
@@ -415,13 +412,10 @@ def expand_grid(limits, grid, skp, maxd):
                 if d < maxd/5.0:
                     ngood = ngood + 1
             good[i] = ngood
-            print(l1,l2,start,end,cc2,ngood)
             i += 1
             
         iex = np.argmax(good)
         if not stop[iex]:
-            #print("GOOD:",good)
-            #print("IEX:", iex)
             limits[iex] += expand[iex]
         good[iex] = -1
 
@@ -506,8 +500,6 @@ def deluge_qr(imgfilename, dbg=1):
         else:
             all_dsts.append(1e9)
 
-    print(pads[0])
-            
     dsts = [d for d in all_dsts if d < 1e9]
 
     if len(dsts) < 2:
@@ -520,14 +512,11 @@ def deluge_qr(imgfilename, dbg=1):
     median_size = [kp.size for kp in skp][n//2]
     isz = int(median_size)//3
 
-    print(len(pads))
-
     for kp in pads:
         for i in range(len(kp.neighbours)-1,0,-1):
             if kp.dists[i] > median_dist*1.6:
                 del kp.dists[i]
                 del kp.neighbours[i]
-    print(len(pads))
     for kp in pads:
         n7 = 0
         for i in kp.neighbours:
@@ -537,28 +526,25 @@ def deluge_qr(imgfilename, dbg=1):
                     break
         else:
             kp.valid = False
-    print(len(pads))
     gridpads = label_grid_points(pads, imc)
-    #grid_centroid[0] /= ng
-    #grid_centroid[1] /= ng
-    #print("GC", grid_centroid)
 
-    print(gridpads)
-    
     grida = np.array([kp.kp.pt for kp in gridpads])
     gridca = np.cov(grida, y=None, rowvar = 0, bias= 1)
 
     v, vect = np.linalg.eig(gridca)
     tvect = np.transpose(vect)
 
-    #draw_cross(imc, grid_centroid[0], grid_centroid[1], tvect)
+    draw_cross(imc, w//2, h//2, tvect)
 
+    cv.imshow("C", imc)
+    
     for kp in gridpads:
-        orient_to_grid(pads, kp, tvect)
+        orient_to_grid(pads, kp, vect)
 
     grpmax = flood_fill_uv_grid(pads, gridpads)
 
-    draw("index2", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
+    draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
+    draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
 
     us = [kp.u for kp in pads if kp.u is not None]
     vs = [kp.v for kp in pads if kp.v is not None]
@@ -576,11 +562,9 @@ def deluge_qr(imgfilename, dbg=1):
 
     px_corners = [[kp.kp.pt[0], kp.kp.pt[1]] for kp in corners]
     grid_corners = [[kp.u, kp.v] for kp in corners]
-    print("HMGIN:", np.array(px_corners).shape)
+
     hmg, status = cv.findHomography(np.array(px_corners), np.array(grid_corners), 0)
     invh = np.linalg.pinv(hmg)
-
-    print("CORNERS:", corners)
 
     uwid = (maxu-minu)
     vwid = (maxv-minv)
@@ -588,17 +572,15 @@ def deluge_qr(imgfilename, dbg=1):
     missing_u = 15-uwid
     missing_v = 15-vwid
 
-    mg = build_grid(minu-missing_u,maxu+missing_u,minv-missing_v,maxv+missing_v)
-    grid = cv.perspectiveTransform(np.array([mg.reshape((-1,2))]), invh).reshape(mg.shape)
+    wide_uvgrid = build_grid(minu-missing_u,maxu+missing_u,minv-missing_v,maxv+missing_v)
+    grid = cv.perspectiveTransform(np.array([wide_uvgrid.reshape((-1,2))]), invh).reshape(wide_uvgrid.shape)
     
-    print(grid.shape)
-
     nx,ny,uv = grid.shape
 
-    maxu -= int(mg[0][0][0])
-    maxv -= int(mg[0][0][1])
-    minu -= int(mg[0][0][0])
-    minv -= int(mg[0][0][1])
+    maxu -= int(wide_uvgrid[0][0][0])
+    maxv -= int(wide_uvgrid[0][0][1])
+    minu -= int(wide_uvgrid[0][0][0])
+    minv -= int(wide_uvgrid[0][0][1])
     
     #for i in range(nx):
     #    for j in range(ny):
@@ -613,31 +595,41 @@ def deluge_qr(imgfilename, dbg=1):
             
     print("GRIDSHAPE",grid.shape)
 
-    print(mg[0][0])
+    print(wide_uvgrid[0][0])
     print(grid[0][0])
 
     limits = [maxu, maxv, minu, minv]
     expand_grid(limits, grid, skp, maxd)
-
+  
     maxu, maxv, minu, minv = tuple(limits)
-    mgtrim = mg[minu:maxu+1, minv:maxv+1,:] 
-    gridonly = grid[minu:maxu+1, minv:maxv+1,:]
+    uvgrid = wide_uvgrid[minu:maxu+1, minv:maxv+1,:] 
+    xygrid = grid[minu:maxu+1, minv:maxv+1,:]
 
+
+    imblk2 = np.zeros(imc.shape, dtype=np.uint8)
+    draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
+
+    cv.imshow("blk_pre",imblk2)
+    
     if maxu-minu < maxv-minv:
-        mgtrim = np.flip(np.transpose(mgtrim, axes=(1,0,2)), axis=2)
-        gridonly = np.transpose(gridonly, axes=(1,0,2))
+        print("FLIPPING...")
+        uvgrid = np.flip(np.transpose(uvgrid, axes=(1,0,2)), axis=2)
+        #uvgrid = np.transpose(uvgrid, axes=(1,0,2))
+        xygrid = np.transpose(xygrid, axes=(1,0,2))
+    else:
+        print("NOT flipping...")
 
-    mgtrim[:,:,0] -= mgtrim[0,0,0]
-    mgtrim[:,:,1] -= mgtrim[0,0,1]
+    uvgrid[:,:,0] -= uvgrid[0,0,0]
+    uvgrid[:,:,1] -= uvgrid[0,0,1]
 
-    hmg, status = cv.findHomography(np.array([gridonly[0][0],
-                                     gridonly[15][0],
-                                     gridonly[15][7],
-                                     gridonly[0][7]]),
-                                    np.array([mgtrim[0][0],
-                                     mgtrim[15][0],
-                                     mgtrim[15][7],
-                                     mgtrim[0][7]]), 0)
+    hmg, status = cv.findHomography(np.array([xygrid[0][0],
+                                     xygrid[15][0],
+                                     xygrid[15][7],
+                                     xygrid[0][7]]),
+                                    np.array([uvgrid[0][0],
+                                     uvgrid[15][0],
+                                     uvgrid[15][7],
+                                     uvgrid[0][7]]), 0)
     invh = np.linalg.pinv(hmg)
     
     sidebar = build_grid(16, 17, 0, 7, xoff = 0.7)
@@ -650,13 +642,25 @@ def deluge_qr(imgfilename, dbg=1):
     nleft = match_grid(sbgrid2, skp, maxd)
 
     if nleft > nright:
-        gridonly = np.flip(gridonly, axis=0)
-        sbgrid = np.flip(sbgrid2, axis=0)
+        sbgrid = sbgrid2
 
+    if maxu-minu < maxv-minv:
+        xygrid = np.flip(xygrid, axis=1)
+        sbgrid = np.flip(sbgrid, axis=1)
+        
+    if nleft > nright:
+        print ("OTHER SIDE")
+        xygrid = np.flip(xygrid, axis=1)
+        sbgrid = np.flip(sbgrid, axis=1)
+
+        xygrid = np.flip(xygrid, axis=0)
+        sbgrid = np.flip(sbgrid, axis=0)
+        #sbgrid = sbgrid2
+    
     imblk = np.zeros(imc.shape, dtype=np.uint8)
-    draw_uvgrid(imblk, gridonly, mgtrim, coords=True)
-    draw_uvgrid(imblk, sbgrid, mgtrim, coords=True)
-#    draw_uvgrid(imblk, sbgrid2, mgtrim, coords=True)
+    draw_uvgrid(imblk, xygrid, uvgrid, coords=True)
+    draw_uvgrid(imblk, sbgrid, uvgrid, coords=True)
+#    draw_uvgrid(imblk, sbgrid2, uvgrid, coords=True)
   
     cv.imshow("blk",imblk)
 
@@ -671,28 +675,28 @@ def deluge_qr(imgfilename, dbg=1):
     # each gridpoint by averaging out a small rectangle
     bris = []
 
-    gray_image = np.full((8, 18), 0, dtype=np.uint8)
-    sat_image = np.zeros((8, 18, 3), dtype=np.uint8)
+    pads_gray = np.full((8, 18), 0, dtype=np.uint8)
+    pads_bgr = np.zeros((8, 18, 3), dtype=np.uint8)
 
     for i in range(16):
         for j in range(8):
-            x = int(gridonly[i][j][0])
-            y = int(gridonly[i][j][1])
+            x = int(xygrid[i][j][0])
+            y = int(xygrid[i][j][1])
             im4 = im[y-isz:y+isz, x-isz:x+isz]
-            gray_image[j][i] = int(cv.mean(im4)[0])
+            pads_gray[j][i] = int(cv.mean(im4)[0])
             im4 = imc_clean[y-isz:y+isz, x-isz:x+isz]
             col = [int(ii) for ii in cv.mean(im4)[:3]]
-            sat_image[j,i,:] = col
+            pads_bgr[j,i,:] = col
 
     for i in range(2):
         for j in range(8):
             x = int(sbgrid[i][j][0])
             y = int(sbgrid[i][j][1])
             im4 = im[y-isz:y+isz, x-isz:x+isz]
-            gray_image[j][i+16] = int(cv.mean(im4)[0])
+            pads_gray[j][i+16] = int(cv.mean(im4)[0])
             im4 = imc_clean[y-isz:y+isz, x-isz:x+isz]
             col = [int(ii) for ii in cv.mean(im4)[:3]]
-            sat_image[j,i+16,:] = col
+            pads_bgr[j,i+16,:] = col
 
     out = [0]*18
         
@@ -720,23 +724,39 @@ def deluge_qr(imgfilename, dbg=1):
 
 #    skpgrid = cv.perspectiveTransform(np.array([a_all]), hmg)[0]
    
-    sat_img2 = cv.cvtColor(sat_image, cv.COLOR_BGR2HSV)[:,:,2]
-    if dbg==1:
-        cv.imshow("gr", gray_image)
-        cv.imshow("Sat", sat_image)
-        cv.imshow("Sat2", sat_img2)
+    pads_hsv = cv.cvtColor(pads_bgr, cv.COLOR_BGR2HSV)[:,:,2]
 
-    sat_img2 = cv.adaptiveThreshold(sat_img2, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 7, 0)
+    if dbg==1:
+        cv.imshow("gr", pads_gray)
+        cv.imshow("Sat", pads_bgr)
+        cv.imshow("Sat2", pads_hsv)
+
+        pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        if dbg == 1: cv.imshow("Pads gray big", pads_gray_big)
+        pads_bgr_big = cv.resize(pads_bgr, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        if dbg == 1: cv.imshow("Pads bgr big", pads_bgr_big)
+        
+
+    #pads_hsv = cv.adaptiveThreshold(pads_hsv, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 7, 0)
     
     #r, sat_img2 = cv.threshold(sat_img2, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 7, 0)
 
+    midval = int(cv.mean(pads_hsv)[0])
+    print(midval)
+    r, pads_hsv_threshold = cv.threshold(pads_hsv, midval, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
+
+    pads_v_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    if dbg == 1: cv.imshow("Pads v big", pads_v_big)
+
+    pads_v_thr_big = cv.resize(pads_hsv_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    if dbg == 1: cv.imshow("Pads v thr big", pads_v_thr_big)
+    
     for ix in range(18):
         for iy in range(8):
-            if sat_img2[iy][ix] > 128:
+            if pads_hsv_threshold[iy][ix] > 128:
                 out[ix] += (0x1 << iy)
 
-
-    hist = cv.calcHist([gray_image], [0], None, [256], [0, 256])
+    hist = cv.calcHist([pads_gray], [0], None, [256], [0, 256])
 
     i = 0
 #    for v in hist:
@@ -745,18 +765,11 @@ def deluge_qr(imgfilename, dbg=1):
 
     for v in out:
         print(f"{v:08b}")
-
        
     # Show keypoints
     if dbg == 1:
         cv.imshow("Grey", imdbg)
         cv.imshow("Keypoints", imc)
-
-    gray_image = cv.resize(gray_image, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    if dbg == 1: cv.imshow("Grey2", gray_image)
-    sat_image = cv.resize(sat_image, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    if dbg == 1: cv.imshow("Sat", sat_image)
-
 
     f = []
     for i in range(4):
@@ -768,7 +781,7 @@ def deluge_qr(imgfilename, dbg=1):
         print(f"0x{fv:08x}")
     print(f"0x{f[4]:04x}")
 
-    overlay = cv.warpPerspective(sat_img2, invh, (w, h), flags= cv.INTER_NEAREST)
+    overlay = cv.warpPerspective(pads_hsv_threshold, invh, (w, h), flags= cv.INTER_NEAREST)
 
     gc = [[-.5,-.5],[-.5,7.5],
           [15.5,7.5],[15.5,-.5]]
@@ -788,13 +801,18 @@ def deluge_qr(imgfilename, dbg=1):
 
     if dbg == 1: cv.imshow("m", comp)
 
-    sat_img2 = cv.resize(sat_img2, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    pads_hsv_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
 
-    if dbg == 1: cv.imshow("Satonly", sat_img2)
+    if dbg == 1: cv.imshow("pads_hsv_big", pads_hsv_big)
+    if dbg == 1: cv.imshow("Clean", imc_clean)
 
     if dbg == 1: cv.waitKey(0)
 
     return f
 
 if __name__ == "__main__":
-    deluge_qr(sys.argv[1])
+    try:
+        deluge_qr(sys.argv[1])
+    except Exception as e:
+        cv.waitKey(0)
+        raise e
