@@ -12,10 +12,6 @@ intents.typing = False
 intents.presences = False
 intents.message_content = True
 
-def bxor(ba1, ba2):
-    """ XOR two byte strings """
-    return bytes([_a ^ _b for _a, _b in zip(ba1, ba2)])
-
 discord_token = os.getenv('DISCORD_TOKEN')
 gh_token = os.getenv('GITHUB_TOKEN')
 
