@@ -5,6 +5,7 @@ import sys
 from statistics import mode
 from dataclasses import dataclass
 from bisect import *
+import requests
 
 def kpdst(kp1, kp2):
     """
@@ -23,7 +24,7 @@ def update_xrange(low, hi, i, kp, dstmax):
     """
     Updates the indices low and hi, to cover the range
     of keypoints in kp that have X coordinate within dstmax of
-    the keypoitn at index i. The low index is inclusive, the
+    the keypoint at index i. The low index is inclusive, the
     hi index is exclusive, ie one beyond the last point in range.
     """
     while(kp[i].pt[0] - kp[low].pt[0] > dstmax):
@@ -42,7 +43,6 @@ class Padpoint:
     kp: object               # cv.KeyPoint found from the image 
     neighbours: list[int]    # List of nearest neighbours
     dists: list[float]       # Distances to neighbours
-    valid: bool = True       # 
     oriented: bool = False   # If this padpoint has been oriented to the
                              # suspected grid. If so it's first 4 neighbours
                              # are now ordered +X, +Y, -X, -Y
@@ -57,33 +57,7 @@ class Padpoint:
         """
         return (int(self.kp.pt[0]), int(self.kp.pt[1]))
     
-def threshold_erode(im, thr):
-    """
-    Adaptive thresholding and erosion/dilation to find thresholded
-    blobs that identify the pad grid.
-    """
-    kernel3 = np.ones((3,3),np.uint8)
-    kernel7 = np.ones((7,7),np.uint8)
-    #r, im2 = cv.threshold(im, thr, 255, cv.THRESH_BINARY)
 
-    im2 = cv.GaussianBlur(im,(7,7),0)
-    im2 = cv.adaptiveThreshold(im2, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 59, 0)
-    im2 = cv.medianBlur(im2,3)
-    
-    #cv.imshow("Dotsmax_at", im2)
-   
-    im2 = cv.dilate(im2, kernel3, 1)
-    #cv.imshow("Dotsmax_d", im2)
-    im2 = cv.erode(im2, kernel3, 1)
-    #cv.imshow("Dotsmax_de", im2)
-    im2 = cv.dilate(im2, kernel7, 1)
-    #cv.imshow("Dotsmax_ded", im2)
-    im2 = cv.erode(im2, kernel3, 1)
-    #cv.imshow("Dotsmax_de", im2)
-    im2 = cv.dilate(im2, kernel3, 1)
-    cv.imshow("Dotsmax_dedd", im2)
-
-    return im2
 
 def find_blobs(im, bwmin, bwmax, binary=False):
     """
@@ -132,17 +106,32 @@ def find_blobs(im, bwmin, bwmax, binary=False):
     keypoints = detector.detect(im)
     return keypoints
 
-def reject_silk_screen(im, bwmin, bwmax):
-    mblobs = 0
-    for t in range(10, 255, 10):
-        dots = threshold_erode(im, t)
-        blobs = find_blobs(dots, bwmin, bwmax, binary=True)
-        if len(blobs) > mblobs:
-            mblobs = len(blobs)
-            imblobs = dots
-            bmax = blobs
-        break
-    return bmax
+def threshold_erode(im):
+    """
+    Adaptive thresholding and erosion/dilation to find thresholded
+    blobs that identify the pad grid.
+    """
+    kernel3 = np.ones((3,3),np.uint8)
+    kernel7 = np.ones((7,7),np.uint8)
+    #r, im2 = cv.threshold(im, thr, 255, cv.THRESH_BINARY)
+
+    im2 = cv.GaussianBlur(im,(7,7),0)
+    im2 = cv.adaptiveThreshold(im2, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 59, 0)
+    im2 = cv.medianBlur(im2,3)
+    
+    #cv.imshow("Dotsmax_at", im2)
+   
+    im2 = cv.dilate(im2, kernel3, 1)
+    #cv.imshow("Dotsmax_d", im2)
+    im2 = cv.erode(im2, kernel3, 1)
+    #cv.imshow("Dotsmax_de", im2)
+    im2 = cv.dilate(im2, kernel7, 1)
+    #cv.imshow("Dotsmax_ded", im2)
+    im2 = cv.erode(im2, kernel3, 1)
+    #cv.imshow("Dotsmax_de", im2)
+    im2 = cv.dilate(im2, kernel3, 1)
+
+    return im2
 
 def build_grid(umin, umax, vmin, vmax, xoff=0.0, yoff=0.0):
     """
@@ -197,6 +186,11 @@ def nearest_keypoint(coord, skp, maxd):
     return dmin, ret
 
 def match_grid(grid, skp, maxd):
+    """
+    Matches a whole grid of xy-points against the image
+    keypoints and counts those that line up
+    grid - 
+    """
     count = 0
     for i in range(grid.shape[0]):
         for j in range(grid.shape[1]):
@@ -223,11 +217,6 @@ def label_grid_points(pads, imc):
         if point_is_gridlike(pads, kp):
             c = (0, 93, 255)
             ng = ng + 1
-            #if grid_centroid is None:
-            #    grid_centroid = [kp.kp.pt[0], kp.kp.pt[1]]
-            #else:
-            #    grid_centroid[0] = grid_centroid[0] + kp.kp.pt[0]
-            #    grid_centroid[1] = grid_centroid[1] + kp.kp.pt[1]
             gridpads.append(kp)
         else:
             c = (255, 192, 0)
@@ -284,10 +273,8 @@ def orient_to_grid(pads, kp, tvect):
     dvs = get_cross_vectors(pads, kp)
 
     dis = [-1000]*4
-    print(dvs)
     for i in range(4):
         gdir = np.dot(dvs[i], tvect)
-        print(gdir)
         if abs(gdir[0]) > abs(gdir[1]):
             # U
             if gdir[0] > 0.0:
@@ -304,8 +291,6 @@ def orient_to_grid(pads, kp, tvect):
         kp.neighbours = [kp.neighbours[j] for j in dis]
         pads[kp.i].oriented = True
     else:
-        print(kp, kp.neighbours, dis, gdir)
-
         raise Exception("Grid like point failed to orient")
     
 
@@ -315,7 +300,6 @@ def flood_fill_uv_grid(pads, gridpads):
     gridlike pads. They are labelled with a u and v coordinate in
     their group, and and the id of the largest group is returned
     """
-    
     fmax = 0
     gpmax = -1
     grp = 0
@@ -365,64 +349,52 @@ def expand_grid(limits, grid, skp, maxd):
     tell which direction gives the most benefit.
     """
     expand = [1,1,-1,-1]
-    steps = [-1, -1, 1, 1]
-    stop = [False]*4
-    good = [-1,-1,-1,-1]
+    nmatches = [-1,-1,-1,-1]
     
-    while not all(stop):
-        expansion = [0]*4
+    while sum(nmatches) != 0:
+        for i in range(4):
+            # Get grid limits in directions relative to 'up'
+            # where up is the growth direction
+            U, R, D, L = (limits[(i+j)%4] for j in range(4))
 
-        if limits[0]-limits[2] > 7:
-            if limits[1]-limits[3] > 6:
-                stop[1] = True
-                stop[3] = True
-            if limits[0]-limits[2] > 14:
-                stop[0] = True
-                stop[2] = True
+            # We don't know whether the grid is horizontal or
+            # vertical - grow until one axis gets larger than
+            # 8 pads, then stop once we hit 8x16 or 16x8
+            height = abs(U-D)
+            width = abs(L-R)
+            if width >= 8:
+                if height >= 7 or width >= 15:
+                    nmatches[i] = 0
+                    continue
+               
+            row = U + expand[i]
 
-        if limits[1]-limits[3] > 7:
-            if limits[0]-limits[2] > 6:
-                stop[0] = True
-                stop[2] = True
-            if limits[1]-limits[3] > 14:
-                stop[1] = True
-                stop[3] = True
-                
-        i = 0
-        while min(good) < 0:
-            if good[i] > 0:
-                i+=1
-                continue
-            if stop[i]:
-                good[i] = 0
-                i+=1
-                continue
-            l1 = limits[(i+1)%4]
-            l2 = limits[(i+3)%4]
-            start = min(l1,l2)
-            end = max(l1,l2)
-            cc2 = limits[i] + expand[i]
-
-            ngood = 0
-            for j in range(start, end+1):
+            # Count how many of the saw openCV keypoints we can
+            # snap to in the current direction if we expand the grid.
+            nmatches[i] = 0
+            for j in range(min(R,L), max(R,L)+1):
                 if i%2 == 0:
-                    d, ikp = nearest_keypoint(grid[cc2][j], skp, maxd)
+                    d, ikp = nearest_keypoint(grid[row][j], skp, maxd)
                 else:
-                    d, ikp = nearest_keypoint(grid[j][cc2], skp, maxd)
+                    d, ikp = nearest_keypoint(grid[j][row], skp, maxd)
                 if d < maxd/5.0:
-                    ngood = ngood + 1
-            good[i] = ngood
-            i += 1
-            
-        iex = np.argmax(good)
-        if not stop[iex]:
+                    nmatches[i] += 1
+
+        # Pick the best direction to expand in
+        iex = np.argmax(nmatches)
+        if nmatches[iex] > 0:
             limits[iex] += expand[iex]
-        good[iex] = -1
+            # Re score all directions, since this expansion may
+            # change the scores on the sides. 
+            nmatches = [-1,-1,-1,-1]
 
     return limits
 
 
 def draw(label, img, keypoints, strfunc):
+    """
+    Draws an image with keypoints and text annotation
+    """
     img2 = img.copy()
     img2 = (img2 // 2) + 126
     for kp in keypoints:
@@ -432,12 +404,24 @@ def draw(label, img, keypoints, strfunc):
         cv.imshow(label, img2)
 
 def draw_cross(img, x, y, tv):
+    """
+    Draws a cross on the image (to show basis vectors from PCA)
+    """
     x = int(x)
     y = int(y)
     cv.line(img, (x-int(tv[0][0]*40),y-int(tv[0][1]*40)), (x+int(tv[0][0]*40),y+int(tv[0][1]*40)), (0, 255, 0), thickness=4, lineType=cv.LINE_AA)
     cv.line(img, (x-int(tv[1][0]*40),y-int(tv[1][1]*40)), (x+int(tv[1][0]*40),y+int(tv[1][1]*40)), (0, 255, 0), thickness=4, lineType=cv.LINE_AA)
 
 def draw_uvgrid(img, grid, uvs, coords = False, size = 14, colour = (255, 123, 0), thickness=1):
+    """
+    Debug display of grids of points.
+    img -  image to draw to
+    grid - grid of point in x-y (pixel) space
+    uvs -  corresponding coords in U/V space
+           (aligned with the pad grid, but possibly offset/flipped/rotated)
+    coords - boolean falg of whether to also draw coords as text.
+    size/colour/thickness - pass through to openCV drawing routines
+    """
     for i in range(grid.shape[0]):
         for j in range(grid.shape[1]):
             x = int(grid[i][j][0])
@@ -448,18 +432,41 @@ def draw_uvgrid(img, grid, uvs, coords = False, size = 14, colour = (255, 123, 0
                 cv.putText(img, f"{int(uvs[i,j,0])} {int(uvs[i,j,1])}", (x,y+15), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,0))
     
         
-def deluge_qr(imgfilename, dbg=1):
-    # Setup SimpleBlobDetector parameters.
-    imc = cv.imread(imgfilename)
-    # Re-read as greyscale and invert
-    im = cv.imread(imgfilename, cv.IMREAD_GRAYSCALE)
+def deluge_qr(imgfilename, dbg=True):
+    """
+    Reads deluge crash handler patterns from image
+    files.
+    """
+    return deluge_qr_img(cv.imread(imgfilename), dbg=dbg)
+
+def deluge_qr_url(url, dbg=False):
+    """
+    Grab an image from the given URL and attempt to read a deluge
+    crash handler pattern.
+    """
+    response = requests.get(url)
+    image_bytes = response.content
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    image = cv.imdecode(nparr, cv.IMREAD_COLOR)
+    return deluge_qr_img(image)
+
+def deluge_qr_img(img, dbg=False):
+    """
+    Identifies the deluge button grid in a photo and reads
+    off the crash handler pointers and github commit hash.
+    """
+    imc = img
+    im = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     im = (255-im)
 
     # Scale down by a factor of 5
     h, w = im.shape[:2]
+    scale = w // 1000
+    print(scale)
     h = h // 5
     w = w // 5
     im = cv.resize(im, (w, h), interpolation= cv.INTER_LINEAR)
+    print(im.shape)
     #im = cv.bilateralFilter(im, 7, 21, 7)
     #im = cv.medianBlur(im, 5)
 
@@ -471,7 +478,9 @@ def deluge_qr(imgfilename, dbg=1):
     bwmax = max(w,h) // 20
     bwmin = bwmax // 3.5
 
-    keypoints = reject_silk_screen(im, bwmin, bwmax)
+    dots = threshold_erode(im)
+    keypoints = find_blobs(dots, bwmin, bwmax, binary=True)
+    if dbg: cv.imshow("Thresholded Pads", dots)
     
     #keypoints = find_blobs(im, bwmin, bwmax)
 
@@ -483,49 +492,14 @@ def deluge_qr(imgfilename, dbg=1):
     n = len(skp)
     maxd = bwmax*1.2
 
-    # Find the median distance between blobs - this should approximate
-    # the pitch of the deluge key matrix
-    all_dsts = []
-
-    bris = []
-    cols = []
-
     pads = []
     
     for i, js, ds in nearby_points(skp, maxd):
         pads.append(Padpoint(i, skp[i], js,ds))
-        print (i, js, ds)
-        if len(ds) > 0:
-            all_dsts.append(min(ds))
-        else:
-            all_dsts.append(1e9)
 
-    dsts = [d for d in all_dsts if d < 1e9]
-
-    if len(dsts) < 2:
-        print("maxd too small to link blobs", maxd)
-        sys.exit(1)
-
-    dsts.sort()
-    #print(dsts)
-    median_dist = dsts[len(dsts)//2]
     median_size = [kp.size for kp in skp][n//2]
     isz = int(median_size)//3
-
-    for kp in pads:
-        for i in range(len(kp.neighbours)-1,0,-1):
-            if kp.dists[i] > median_dist*1.6:
-                del kp.dists[i]
-                del kp.neighbours[i]
-    for kp in pads:
-        n7 = 0
-        for i in kp.neighbours:
-            if len(pads[i].neighbours) >= 7:
-                n7 += 1
-                if n7 > 2:
-                    break
-        else:
-            kp.valid = False
+                
     gridpads = label_grid_points(pads, imc)
 
     grida = np.array([kp.kp.pt for kp in gridpads])
@@ -535,16 +509,15 @@ def deluge_qr(imgfilename, dbg=1):
     tvect = np.transpose(vect)
 
     draw_cross(imc, w//2, h//2, tvect)
-
-    cv.imshow("C", imc)
     
     for kp in gridpads:
         orient_to_grid(pads, kp, vect)
 
     grpmax = flood_fill_uv_grid(pads, gridpads)
 
-    draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
-    draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
+    if dbg:
+        draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
+        draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
 
     us = [kp.u for kp in pads if kp.u is not None]
     vs = [kp.v for kp in pads if kp.v is not None]
@@ -581,23 +554,7 @@ def deluge_qr(imgfilename, dbg=1):
     maxv -= int(wide_uvgrid[0][0][1])
     minu -= int(wide_uvgrid[0][0][0])
     minv -= int(wide_uvgrid[0][0][1])
-    
-    #for i in range(nx):
-    #    for j in range(ny):
-    #        cv.circle(imc, (int(grid[i][j][0]), int(grid[i][j][1])), 7,
-    #                  (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
-
-   
-    #for i in range(grid.shape[0]):
-    #    for j in range(grid.shape[1]):
-    #        cv.circle(imc, (int(grid[i][j][0]), int(grid[i][j][1])),
-    #                  7, (0, 92, 255), thickness=4, lineType=cv.LINE_AA)
             
-    print("GRIDSHAPE",grid.shape)
-
-    print(wide_uvgrid[0][0])
-    print(grid[0][0])
-
     limits = [maxu, maxv, minu, minv]
     expand_grid(limits, grid, skp, maxd)
   
@@ -609,27 +566,30 @@ def deluge_qr(imgfilename, dbg=1):
     imblk2 = np.zeros(imc.shape, dtype=np.uint8)
     draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
 
-    cv.imshow("blk_pre",imblk2)
+    #cv.imshow("blk_pre",imblk2)
     
     if maxu-minu < maxv-minv:
-        print("FLIPPING...")
         uvgrid = np.flip(np.transpose(uvgrid, axes=(1,0,2)), axis=2)
-        #uvgrid = np.transpose(uvgrid, axes=(1,0,2))
         xygrid = np.transpose(xygrid, axes=(1,0,2))
-    else:
-        print("NOT flipping...")
 
     uvgrid[:,:,0] -= uvgrid[0,0,0]
     uvgrid[:,:,1] -= uvgrid[0,0,1]
 
-    hmg, status = cv.findHomography(np.array([xygrid[0][0],
-                                     xygrid[15][0],
-                                     xygrid[15][7],
-                                     xygrid[0][7]]),
-                                    np.array([uvgrid[0][0],
-                                     uvgrid[15][0],
-                                     uvgrid[15][7],
-                                     uvgrid[0][7]]), 0)
+    cc = [(0,92,255),(0,255,192), (192, 200, 0), (255, 92, 0)]
+    cv.circle(imc, (int(xygrid[0][0][0]) , int(xygrid[0][0][1] )), 15, cc[0], thickness=-1, lineType=cv.LINE_AA)
+    cv.circle(imc, (int(xygrid[15][0][0]),int(xygrid[15][0][1] )), 15, cc[1], thickness=-1, lineType=cv.LINE_AA)
+    cv.circle(imc, (int(xygrid[15][7][0]),int(xygrid[15][7][1]) ), 15, cc[2], thickness=-1, lineType=cv.LINE_AA)
+    cv.circle(imc, (int(xygrid[0][7][0] ),int(xygrid[0][7][1] ) ), 15, cc[3], thickness=-1, lineType=cv.LINE_AA)
+    
+    hmg, status = cv.findHomography(
+        np.array([xygrid[0][0],
+                  xygrid[15][0],
+                  xygrid[15][7],
+                  xygrid[0][7]]),
+        np.array([uvgrid[0][0],
+                  uvgrid[15][0],
+                  uvgrid[15][7],
+                  uvgrid[0][7]]), 0)
     invh = np.linalg.pinv(hmg)
     
     sidebar = build_grid(16, 17, 0, 7, xoff = 0.7)
@@ -649,32 +609,27 @@ def deluge_qr(imgfilename, dbg=1):
         sbgrid = np.flip(sbgrid, axis=1)
         
     if nleft > nright:
-        print ("OTHER SIDE")
-        xygrid = np.flip(xygrid, axis=1)
-        sbgrid = np.flip(sbgrid, axis=1)
-
-        xygrid = np.flip(xygrid, axis=0)
-        sbgrid = np.flip(sbgrid, axis=0)
-        #sbgrid = sbgrid2
+        xygrid = np.flip(xygrid, axis=(0,1))
+        sbgrid = np.flip(sbgrid, axis=(0,1))
     
     imblk = np.zeros(imc.shape, dtype=np.uint8)
     draw_uvgrid(imblk, xygrid, uvgrid, coords=True)
     draw_uvgrid(imblk, sbgrid, uvgrid, coords=True)
-#    draw_uvgrid(imblk, sbgrid2, uvgrid, coords=True)
   
-    cv.imshow("blk",imblk)
-
-    cc = [(0,92,255),(0,255,192), (192, 200, 0), (255, 92, 0)]
-    i = 0
-    for c in corners:
-        x,y = c.ixy()
-        cv.circle(imc, (x,y), 15, cc[i], thickness=-1, lineType=cv.LINE_AA)
-        i+=1
-
-    # Get colour / brightness values from
-    # each gridpoint by averaging out a small rectangle
-    bris = []
-
+    #cv.imshow("blk",imblk)
+    
+    # Re-do the homography to make sure it's right way up
+    hmg, status = cv.findHomography(
+        np.array([xygrid[0][0],
+                  xygrid[15][0],
+                  xygrid[15][7],
+                  xygrid[0][7]]),
+        np.array([uvgrid[0][0],
+                  uvgrid[15][0],
+                  uvgrid[15][7],
+                  uvgrid[0][7]]), 0)
+    invh = np.linalg.pinv(hmg)
+    
     pads_gray = np.full((8, 18), 0, dtype=np.uint8)
     pads_bgr = np.zeros((8, 18, 3), dtype=np.uint8)
 
@@ -699,78 +654,22 @@ def deluge_qr(imgfilename, dbg=1):
             pads_bgr[j,i+16,:] = col
 
     out = [0]*18
-        
-    #midbri = (max(bris)-min(bris)) // 2
-    
+
     #for gp in grid[0]:
     #    cv.circle(imc, (int(gp[0]), int(gp[1])), 7, (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
-
-    bracketpts = [[-.5,-.5],[.5,-.5],
-                  [14.5,-.5],[15.5,-.5],
-                  [-.5,7.5],[.5,7.5],
-                  [14.5,7.5],[15.5,7.5],
-                  [-.5,-.5],[-.5,.5],
-                  [15.5,-.5],[15.5,.5],
-                  [-.5,7.5],[-.5,6.5],
-                  [15.5,7.5],[15.5,6.5]]
-
-    bp = cv.perspectiveTransform(np.array([bracketpts]), invh)[0]
-    for i in range(8):
-        x = int(bp[i*2][0])
-        y = int(bp[i*2][1])
-        x2 = int(bp[i*2+1][0])
-        y2 = int(bp[i*2+1][1])
-        cv.line(imc, (x,y), (x2,y2), (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
-
-#    skpgrid = cv.perspectiveTransform(np.array([a_all]), hmg)[0]
-   
+    
     pads_hsv = cv.cvtColor(pads_bgr, cv.COLOR_BGR2HSV)[:,:,2]
 
-    if dbg==1:
-        cv.imshow("gr", pads_gray)
-        cv.imshow("Sat", pads_bgr)
-        cv.imshow("Sat2", pads_hsv)
-
-        pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-        if dbg == 1: cv.imshow("Pads gray big", pads_gray_big)
-        pads_bgr_big = cv.resize(pads_bgr, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-        if dbg == 1: cv.imshow("Pads bgr big", pads_bgr_big)
-        
-
-    #pads_hsv = cv.adaptiveThreshold(pads_hsv, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 7, 0)
-    
-    #r, sat_img2 = cv.threshold(sat_img2, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 7, 0)
-
-    midval = int(cv.mean(pads_hsv)[0])
-    print(midval)
-    r, pads_hsv_threshold = cv.threshold(pads_hsv, midval, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
-
-    pads_v_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    if dbg == 1: cv.imshow("Pads v big", pads_v_big)
-
-    pads_v_thr_big = cv.resize(pads_hsv_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    if dbg == 1: cv.imshow("Pads v thr big", pads_v_thr_big)
+    r, pads_hsv_threshold = cv.threshold(pads_hsv, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
     
     for ix in range(18):
         for iy in range(8):
             if pads_hsv_threshold[iy][ix] > 128:
                 out[ix] += (0x1 << iy)
-
-    hist = cv.calcHist([pads_gray], [0], None, [256], [0, 256])
-
-    i = 0
-#    for v in hist:
-#        print( i, "*"*int(v))
-#        i += 1
-
+    
     for v in out:
         print(f"{v:08b}")
        
-    # Show keypoints
-    if dbg == 1:
-        cv.imshow("Grey", imdbg)
-        cv.imshow("Keypoints", imc)
-
     f = []
     for i in range(4):
         f.append(out[i*4]<<24 | out[i*4+1]<<16 | out[i*4+2]<<8 | out[i*4+3])
@@ -781,32 +680,53 @@ def deluge_qr(imgfilename, dbg=1):
         print(f"0x{fv:08x}")
     print(f"0x{f[4]:04x}")
 
-    overlay = cv.warpPerspective(pads_hsv_threshold, invh, (w, h), flags= cv.INTER_NEAREST)
+    if dbg:
+        bracketpts = [[-.5,-.5],[.5,-.5],
+                      [14.5,-.5],[15.5,-.5],
+                      [-.5,7.5],[.5,7.5],
+                      [14.5,7.5],[15.5,7.5],
+                      [-.5,-.5],[-.5,.5],
+                      [15.5,-.5],[15.5,.5],
+                      [-.5,7.5],[-.5,6.5],
+                      [15.5,7.5],[15.5,6.5]]
 
-    gc = [[-.5,-.5],[-.5,7.5],
-          [15.5,7.5],[15.5,-.5]]
+        bp = cv.perspectiveTransform(np.array([bracketpts]), invh)[0]
+        for i in range(8):
+            x = int(bp[i*2][0])
+            y = int(bp[i*2][1])
+            x2 = int(bp[i*2+1][0])
+            y2 = int(bp[i*2+1][1])
+            cv.line(imc, (x,y), (x2,y2), (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
+        
+        cv.imshow("gr", pads_gray)
+        cv.imshow("Sat", pads_bgr)
+        cv.imshow("Sat2", pads_hsv)
 
-    corn = cv.perspectiveTransform(np.array([gc]), invh)[0]
-    corn = np.rint(corn).astype(int)
+        pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        cv.imshow("Pads gray big", pads_gray_big)
+        pads_bgr_big = cv.resize(pads_bgr, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        cv.imshow("Pads bgr big", pads_bgr_big)
 
-    mask = np.full((h,w), 255, dtype=np.uint8)
+        
+        pads_v_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        cv.imshow("Pads v big", pads_v_big)
+        pads_v_thr_big = cv.resize(pads_hsv_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        cv.imshow("Pads v thr big", pads_v_thr_big)
 
-    cv.fillPoly(mask, [corn], 0)
+        cv.imshow("Grey", imdbg)
+        cv.imshow("Keypoints", imc)
 
-    m3 = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
+        overlay = cv.warpPerspective(pads_hsv_threshold, invh, (w, h), flags= cv.INTER_NEAREST)
+        overlay = cv.cvtColor(overlay, cv.COLOR_GRAY2BGR)
+        comp = cv.bitwise_or(imc, overlay)
 
-    #comp = cv.bitwise_and(imc, m3)
-    overlay = cv.cvtColor(overlay, cv.COLOR_GRAY2BGR)
-    comp = cv.bitwise_or(imc, overlay)
+        cv.imshow("m", comp)
+        pads_hsv_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+        cv.imshow("pads_hsv_big", pads_hsv_big)
 
-    if dbg == 1: cv.imshow("m", comp)
+        cv.imshow("Clean", imc_clean)
 
-    pads_hsv_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-
-    if dbg == 1: cv.imshow("pads_hsv_big", pads_hsv_big)
-    if dbg == 1: cv.imshow("Clean", imc_clean)
-
-    if dbg == 1: cv.waitKey(0)
+        cv.waitKey(0)
 
     return f
 
@@ -814,5 +734,6 @@ if __name__ == "__main__":
     try:
         deluge_qr(sys.argv[1])
     except Exception as e:
+        # Pause so we can inspect the debug images.
         cv.waitKey(0)
         raise e
