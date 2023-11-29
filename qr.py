@@ -291,7 +291,8 @@ def orient_to_grid(pads, kp, tvect):
         kp.neighbours = [kp.neighbours[j] for j in dis]
         pads[kp.i].oriented = True
     else:
-        raise Exception("Grid like point failed to orient")
+        print(kp, dvs)
+        #raise Exception("Grid like point failed to orient")
     
 
 def flood_fill_uv_grid(pads, gridpads):
@@ -459,14 +460,14 @@ def deluge_qr_img(img, dbg=False):
     im = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     im = (255-im)
 
-    # Scale down by a factor of 5
+    # Scale down to approx 800 px image width/height
     h, w = im.shape[:2]
-    scale = w // 1000
-    print(scale)
-    h = h // 5
-    w = w // 5
+    scale = max(h / 800.0, w / 800.0)
+
+    h = h // int(scale)
+    w = w // int(scale)
     im = cv.resize(im, (w, h), interpolation= cv.INTER_LINEAR)
-    print(im.shape)
+
     #im = cv.bilateralFilter(im, 7, 21, 7)
     #im = cv.medianBlur(im, 5)
 
@@ -509,7 +510,7 @@ def deluge_qr_img(img, dbg=False):
     tvect = np.transpose(vect)
 
     draw_cross(imc, w//2, h//2, tvect)
-    
+
     for kp in gridpads:
         orient_to_grid(pads, kp, vect)
 
@@ -680,55 +681,60 @@ def deluge_qr_img(img, dbg=False):
         print(f"0x{fv:08x}")
     print(f"0x{f[4]:04x}")
 
-    if dbg:
-        bracketpts = [[-.5,-.5],[.5,-.5],
-                      [14.5,-.5],[15.5,-.5],
-                      [-.5,7.5],[.5,7.5],
-                      [14.5,7.5],[15.5,7.5],
-                      [-.5,-.5],[-.5,.5],
-                      [15.5,-.5],[15.5,.5],
-                      [-.5,7.5],[-.5,6.5],
-                      [15.5,7.5],[15.5,6.5]]
 
-        bp = cv.perspectiveTransform(np.array([bracketpts]), invh)[0]
-        for i in range(8):
-            x = int(bp[i*2][0])
-            y = int(bp[i*2][1])
-            x2 = int(bp[i*2+1][0])
-            y2 = int(bp[i*2+1][1])
-            cv.line(imc, (x,y), (x2,y2), (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
-        
+    bracketpts = [[-.5,-.5],[.5,-.5],
+                  [14.5,-.5],[15.5,-.5],
+                  [-.5,7.5],[.5,7.5],
+                  [14.5,7.5],[15.5,7.5],
+                  [-.5,-.5],[-.5,.5],
+                  [15.5,-.5],[15.5,.5],
+                  [-.5,7.5],[-.5,6.5],
+                  [15.5,7.5],[15.5,6.5]]
+
+    bp = cv.perspectiveTransform(np.array([bracketpts]), invh)[0]
+    for i in range(8):
+        x = int(bp[i*2][0])
+        y = int(bp[i*2][1])
+        x2 = int(bp[i*2+1][0])
+        y2 = int(bp[i*2+1][1])
+        cv.line(imc, (x,y), (x2,y2), (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
+
+    pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    pads_bgr_big = cv.resize(pads_bgr, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    pads_v_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    pads_v_thr_big = cv.resize(pads_hsv_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+
+    pads_shifted = np.zeros((8, 19), dtype=np.uint8)
+    pads_shifted[0:8,0:16] = pads_hsv_threshold[0:8,0:16]
+    pads_shifted[0:8,17:19] = pads_hsv_threshold[0:8,16:18]
+    
+    overlay = cv.warpPerspective(pads_shifted, invh, (w, h), flags= cv.INTER_NEAREST)
+    overlay = cv.cvtColor(overlay, cv.COLOR_GRAY2BGR)
+    comp = cv.bitwise_or(imc, overlay)
+    pads_hsv_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    
+    if dbg:        
         cv.imshow("gr", pads_gray)
         cv.imshow("Sat", pads_bgr)
         cv.imshow("Sat2", pads_hsv)
 
-        pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
         cv.imshow("Pads gray big", pads_gray_big)
-        pads_bgr_big = cv.resize(pads_bgr, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
         cv.imshow("Pads bgr big", pads_bgr_big)
-
         
-        pads_v_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
         cv.imshow("Pads v big", pads_v_big)
-        pads_v_thr_big = cv.resize(pads_hsv_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
         cv.imshow("Pads v thr big", pads_v_thr_big)
 
         cv.imshow("Grey", imdbg)
         cv.imshow("Keypoints", imc)
 
-        overlay = cv.warpPerspective(pads_hsv_threshold, invh, (w, h), flags= cv.INTER_NEAREST)
-        overlay = cv.cvtColor(overlay, cv.COLOR_GRAY2BGR)
-        comp = cv.bitwise_or(imc, overlay)
-
         cv.imshow("m", comp)
-        pads_hsv_big = cv.resize(pads_hsv, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
         cv.imshow("pads_hsv_big", pads_hsv_big)
 
         cv.imshow("Clean", imc_clean)
 
         cv.waitKey(0)
 
-    return f
+    return f, comp
 
 if __name__ == "__main__":
     try:
