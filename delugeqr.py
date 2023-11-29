@@ -48,7 +48,7 @@ async def on_message(message):
                 if len(code) == 5:
                     st = ""
                     for fv in code[:4]:
-                        st += f"0x{fv:08x} "
+                        st += f"0x{fv:08x}\n"
                     commit_fragment = f"{code[4]:04x}"
                     st += f"0x{commit_fragment}"
 
@@ -58,11 +58,11 @@ async def on_message(message):
 
                     if len(matching_commits) == 1:
                         await message.channel.send(f'Thanks for the image {message.author.mention}!,'+
-                                                   f'it decodes as: {st}\n'+
+                                                   f'it decodes as:\n{st}\n'+
                                                    gh_url+matching_commits[0])                
                     else:
                         await message.channel.send(f'Thanks for the image {message.author.mention}!,'+
-                                                   f'it decodes as: {st}\n'+
+                                                   f'it decodes as:\n{st}\n'+
                                                    "I couldn't find a recent matching commit.")      
                         
 client.run(discord_token)
