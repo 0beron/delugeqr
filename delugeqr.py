@@ -32,6 +32,8 @@ async def on_ready():
 @client.event
 async def on_message(message):
     # Check if the message has any attachments
+    if message.author.bot:
+        return
     if message.attachments:
         # Check if any attachment is an image
         for attachment in message.attachments:
