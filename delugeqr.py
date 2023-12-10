@@ -34,6 +34,8 @@ async def on_message(message):
     # Check if the message has any attachments
     if message.author.bot:
         return
+    if message.channel.name.encode('utf-8') != b'\xf0\x9f\x8c\x99nightly-testing':
+        return
     if message.attachments:
         # Check if any attachment is an image
         for attachment in message.attachments:
