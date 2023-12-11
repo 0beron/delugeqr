@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from bisect import *
 import requests
 
+ERODE_HIGH = 0
+ERODE_LOW = 1
+
 def kpdst(kp1, kp2):
     """
     Euclidean distance between 2 cv.KeyPoints
@@ -106,7 +109,7 @@ def find_blobs(im, bwmin, bwmax, binary=False):
     keypoints = detector.detect(im)
     return keypoints
 
-def threshold_erode(im):
+def threshold_erode(im, erode_amount, fill_holes):
     """
     Adaptive thresholding and erosion/dilation to find thresholded
     blobs that identify the pad grid.
@@ -120,6 +123,17 @@ def threshold_erode(im):
     im2 = cv.medianBlur(im2,3)
     
     #cv.imshow("Dotsmax_at", im2)
+    if erode_amount == ERODE_LOW:
+        if fill_holes:
+            im2inv = cv.bitwise_not(im2)
+            contour, hier = cv.findContours(im2inv,cv.RETR_CCOMP,cv.CHAIN_APPROX_SIMPLE)
+
+            for cnt in contour:
+                cv.drawContours(im2inv,[cnt],0,255,-1)
+
+            im2 = cv.bitwise_not(im2inv)
+            #cv.imshow("CCOMP", im2)
+        return im2
    
     im2 = cv.dilate(im2, kernel3, 1)
     #cv.imshow("Dotsmax_d", im2)
@@ -230,6 +244,38 @@ def label_grid_points(pads, imc):
                 cv.line(imc, (x,y), (x2, y2), c, thickness=2, lineType=cv.LINE_AA)
     return gridpads
 
+def locate_grid(im, imc, bwmin, bwmax):
+    results = [attempt_grid(im, imc, bwmin, bwmax, ERODE_HIGH, False), 
+        attempt_grid(im, imc, bwmin, bwmax, ERODE_LOW, False), 
+        attempt_grid(im, imc, bwmin, bwmax, ERODE_LOW, True)]
+    
+    num = np.array([len(r[2]) for r in results])
+    best = np.argmax(num)
+
+    return results[best]
+
+def attempt_grid(im, imc, bwmin, bwmax, erode_amount, hole_fill):
+    dots = threshold_erode(im, erode_amount, hole_fill)
+    
+    keypoints = find_blobs(dots, bwmin, bwmax, binary=True)
+   
+    #keypoints = find_blobs(im, bwmin, bwmax)
+
+    skp = list(keypoints)
+    skp.sort(key= lambda kp:kp.pt)
+
+    low = 0
+    hi = 0
+    maxd = bwmax*1.2
+
+    pads = []
+    
+    for i, js, ds in nearby_points(skp, maxd):
+        pads.append(Padpoint(i, skp[i], js,ds))
+  
+    gridpads = label_grid_points(pads, imc)
+
+    return skp, pads, gridpads, dots
 
 def get_cross_vectors(pads, pp):
     """
@@ -356,7 +402,7 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
     
     while sum(nmatches) != 0:
 
-        snaps = [[]]*4
+        snaps = [[], [], [], []]
         for i in range(4):
             # Get grid limits in directions relative to 'up'
             # where up is the growth direction
@@ -388,7 +434,7 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
                     kpv = row
                 if d < maxd/5.0:
                     nmatches[i] += 1
-                    pads[idx].u = kpu + int( wide_uvgrid[0][0][0])
+                    pads[idx].u = kpu + int(wide_uvgrid[0][0][0])
                     pads[idx].v = kpv + int(wide_uvgrid[0][0][1])
                     snaps[i].append(pads[idx])
 
@@ -505,30 +551,15 @@ def deluge_qr_img(img, dbg=False):
     bwmax = max(w,h) // 20
     bwmin = bwmax // 3.5
 
-    dots = threshold_erode(im)
-    keypoints = find_blobs(dots, bwmin, bwmax, binary=True)
+    skp, pads, gridpads, dots = locate_grid(im, imc, bwmin, bwmax)
+
     if dbg: cv.imshow("Thresholded Pads", dots)
-    
-    #keypoints = find_blobs(im, bwmin, bwmax)
 
-    skp = list(keypoints)
-    skp.sort(key= lambda kp:kp.pt)
-
-    low = 0
-    hi = 0
     n = len(skp)
-    maxd = bwmax*1.2
-
-    pads = []
-    
-    for i, js, ds in nearby_points(skp, maxd):
-        pads.append(Padpoint(i, skp[i], js,ds))
-
+    maxd = bwmax * 1.2
     median_size = [kp.size for kp in skp][n//2]
     isz = int(median_size)//3
-                
-    gridpads = label_grid_points(pads, imc)
-
+    
     grida = np.array([kp.kp.pt for kp in gridpads])
     gridca = np.cov(grida, y=None, rowvar = 0, bias= 1)
 
@@ -542,15 +573,15 @@ def deluge_qr_img(img, dbg=False):
 
     grpmax = flood_fill_uv_grid(pads, gridpads)
 
-    us = [kp.u for kp in pads if kp.u is not None]
-    vs = [kp.v for kp in pads if kp.v is not None]
+    grppnts = [gp for gp in gridpads if gp.group == grpmax]
+
+    us = [kp.u for kp in grppnts if kp.u is not None]
+    vs = [kp.v for kp in grppnts if kp.v is not None]
     minu = min(us)
     minv = min(vs)
-
     maxu = max(us)
     maxv = max(vs)
 
-    grppnts = [gp for gp in gridpads if gp.group == grpmax]
     
     # Find the ditortion between this (possibly partial) grid and the image
     hmg = homography_from_partial_grid(grppnts)
@@ -573,12 +604,11 @@ def deluge_qr_img(img, dbg=False):
     maxv -= int(wide_uvgrid[0][0][1])
     minu -= int(wide_uvgrid[0][0][0])
     minv -= int(wide_uvgrid[0][0][1])
-
+   
     # Push the grid out into other parts of the image and snap it onto
     # the keypoints found there
     limits = [maxu, maxv, minu, minv]  
     limits, grid, hmg = expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd)
-
 
     if dbg:
         draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
