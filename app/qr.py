@@ -534,7 +534,7 @@ def deluge_qr_img(img, dbg=False):
 
     # Scale down to approx 800 px image width/height
     h, w = im.shape[:2]
-    scale = max(h / 800.0, w / 800.0)
+    scale = max(1.0, h / 800.0, w / 800.0)
 
     h = h // int(scale)
     w = w // int(scale)
