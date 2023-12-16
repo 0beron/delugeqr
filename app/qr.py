@@ -76,7 +76,7 @@ def find_blobs(im, bwmin, bwmax, binary=False):
         params.thresholdStep = 8
         # Filter by Area.
         params.filterByArea = True
-        params.minArea = 12
+        params.minArea = 30
         params.maxArea = bwmax*bwmax
     else:
         params.minThreshold = 100;
@@ -124,15 +124,7 @@ def threshold_erode(im, erode_amount, fill_holes):
     
     #cv.imshow("Dotsmax_at", im2)
     if erode_amount == ERODE_LOW:
-        if fill_holes:
-            im2inv = cv.bitwise_not(im2)
-            contour, hier = cv.findContours(im2inv,cv.RETR_CCOMP,cv.CHAIN_APPROX_SIMPLE)
-
-            for cnt in contour:
-                cv.drawContours(im2inv,[cnt],0,255,-1)
-
-            im2 = cv.bitwise_not(im2inv)
-            #cv.imshow("CCOMP", im2)
+        
         return im2
    
     im2 = cv.dilate(im2, kernel3, 1)
@@ -145,6 +137,16 @@ def threshold_erode(im, erode_amount, fill_holes):
     #cv.imshow("Dotsmax_de", im2)
     im2 = cv.dilate(im2, kernel3, 1)
 
+    return im2
+
+def fill_holes(im):
+    im2inv = cv.bitwise_not(im)
+    contour, hier = cv.findContours(im2inv,cv.RETR_CCOMP,cv.CHAIN_APPROX_SIMPLE)
+            
+    for cnt in contour:
+        cv.drawContours(im2inv,[cnt],0,255,-1)
+
+    im2 = cv.bitwise_not(im2inv)
     return im2
 
 def build_grid(umin, umax, vmin, vmax, xoff=0.0, yoff=0.0):
@@ -245,7 +247,8 @@ def label_grid_points(pads, imc):
     return gridpads
 
 def locate_grid(im, imc, bwmin, bwmax):
-    results = [attempt_grid(im, imc, bwmin, bwmax, ERODE_HIGH, False), 
+    results = [attempt_grid(im, imc, bwmin, bwmax, ERODE_HIGH, False),
+               attempt_grid(im, imc, bwmin, bwmax, ERODE_HIGH, True), 
         attempt_grid(im, imc, bwmin, bwmax, ERODE_LOW, False), 
         attempt_grid(im, imc, bwmin, bwmax, ERODE_LOW, True)]
     
@@ -256,6 +259,8 @@ def locate_grid(im, imc, bwmin, bwmax):
 
 def attempt_grid(im, imc, bwmin, bwmax, erode_amount, hole_fill):
     dots = threshold_erode(im, erode_amount, hole_fill)
+    if hole_fill:
+        dots = fill_holes(dots)
     
     keypoints = find_blobs(dots, bwmin, bwmax, binary=True)
    
@@ -263,7 +268,7 @@ def attempt_grid(im, imc, bwmin, bwmax, erode_amount, hole_fill):
 
     skp = list(keypoints)
     skp.sort(key= lambda kp:kp.pt)
-
+    imc2 = imc.copy()
     low = 0
     hi = 0
     maxd = bwmax*1.2
@@ -273,9 +278,9 @@ def attempt_grid(im, imc, bwmin, bwmax, erode_amount, hole_fill):
     for i, js, ds in nearby_points(skp, maxd):
         pads.append(Padpoint(i, skp[i], js,ds))
   
-    gridpads = label_grid_points(pads, imc)
+    gridpads = label_grid_points(pads, imc2)
 
-    return skp, pads, gridpads, dots
+    return skp, pads, gridpads, dots, imc2
 
 def get_cross_vectors(pads, pp):
     """
@@ -407,7 +412,7 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
             # Get grid limits in directions relative to 'up'
             # where up is the growth direction
             U, R, D, L = (limits[(i+j)%4] for j in range(4))
-           
+
             # We don't know whether the grid is horizontal or
             # vertical - grow until one axis gets larger than
             # 8 pads, then stop once we hit 8x16 or 16x8
@@ -494,10 +499,26 @@ def draw_uvgrid(img, grid, uvs, coords = False, size = 14, colour = (255, 123, 0
                 cv.putText(img, f"{int(uvs[i,j,0])} {int(uvs[i,j,1])}", (x,y+15), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,0))
 
 def homography_from_partial_grid(padpoints):
-    corners = [min(padpoints, key=lambda k:k.u+k.v),
-               max(padpoints, key=lambda k:k.u-k.v),
-               max(padpoints, key=lambda k:k.u+k.v),
-               min(padpoints, key=lambda k:k.u-k.v)]
+    convex_pads = padpoints[:]
+
+    extents = [min(padpoints, key=lambda k:k.u).u,
+               max(padpoints, key=lambda k:k.u).u,
+               min(padpoints, key=lambda k:k.v).v,
+               max(padpoints, key=lambda k:k.v).v]
+
+    for u in range(extents[0], extents[1]+1):
+        row = [pnt for pnt in padpoints if pnt.u == u]
+        if len(row) == 1:
+            convex_pads.remove(row[0])
+    for v in range(extents[2], extents[3]+1):
+        row = [pnt for pnt in padpoints if pnt.v == v]
+        if len(row) == 1:
+            convex_pads.remove(row[0])
+            
+    corners = [min(convex_pads, key=lambda k:k.u+k.v),
+               max(convex_pads, key=lambda k:k.u-k.v),
+               max(convex_pads, key=lambda k:k.u+k.v),
+               min(convex_pads, key=lambda k:k.u-k.v)]
     px_corners = [[kp.kp.pt[0], kp.kp.pt[1]] for kp in corners]
     grid_corners = [[kp.u, kp.v] for kp in corners]
 
@@ -551,9 +572,13 @@ def deluge_qr_img(img, dbg=False):
     bwmax = max(w,h) // 20
     bwmin = bwmax // 3.5
 
-    skp, pads, gridpads, dots = locate_grid(im, imc, bwmin, bwmax)
+    skp, pads, gridpads, dots, imc = locate_grid(im, imc, bwmin, bwmax)
 
-    if dbg: cv.imshow("Thresholded Pads", dots)
+    d2 = dots.copy()
+    d2 = cv.drawKeypoints(d2, skp, 0, (0, 0, 255), 
+                                 flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    
+   
 
     n = len(skp)
     maxd = bwmax * 1.2
@@ -568,6 +593,11 @@ def deluge_qr_img(img, dbg=False):
 
     draw_cross(imc, w//2, h//2, tvect)
 
+    if dbg:
+        cv.imshow("aft DMF", imc)
+        cv.imshow("Thresholded Pads", dots)
+        cv.imshow("TDD", d2)
+    
     for kp in gridpads:
         orient_to_grid(pads, kp, vect)
 
@@ -599,22 +629,23 @@ def deluge_qr_img(img, dbg=False):
     # and which parts of the grid we have already found.
     wide_uvgrid = build_grid(minu-missing_u,maxu+missing_u,minv-missing_v,maxv+missing_v) 
     grid = cv.perspectiveTransform(np.array([wide_uvgrid.reshape((-1,2))]), invh).reshape(wide_uvgrid.shape)
-    
+
     maxu -= int(wide_uvgrid[0][0][0])
     maxv -= int(wide_uvgrid[0][0][1])
     minu -= int(wide_uvgrid[0][0][0])
     minv -= int(wide_uvgrid[0][0][1])
-   
-    # Push the grid out into other parts of the image and snap it onto
-    # the keypoints found there
-    limits = [maxu, maxv, minu, minv]  
-    limits, grid, hmg = expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd)
 
     if dbg:
         draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
         draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
         draw("I", imdbg, pads, lambda k:str(k.i))
     
+        
+    # Push the grid out into other parts of the image and snap it onto
+    # the keypoints found there
+    limits = [maxu, maxv, minu, minv]  
+    limits, grid, hmg = expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd)
+
     maxu, maxv, minu, minv = tuple(limits)
     uvgrid = wide_uvgrid[minu:maxu+1, minv:maxv+1,:] 
     xygrid = grid[minu:maxu+1, minv:maxv+1,:]
@@ -671,8 +702,6 @@ def deluge_qr_img(img, dbg=False):
     draw_uvgrid(imblk, xygrid, uvgrid, coords=True)
     draw_uvgrid(imblk, sbgrid, uvgrid, coords=True)
   
-    #cv.imshow("blk",imblk)
-    
     # Re-do the homography to make sure it's right way up
     hmg, status = cv.findHomography(
         np.array([xygrid[0][0],
@@ -688,6 +717,7 @@ def deluge_qr_img(img, dbg=False):
     pads_gray = np.full((8, 18), 0, dtype=np.uint8)
     pads_bgr = np.zeros((8, 18, 3), dtype=np.uint8)
 
+    isz = isz //2
     for i in range(16):
         for j in range(8):
             x = int(xygrid[i][j][0])
@@ -697,7 +727,8 @@ def deluge_qr_img(img, dbg=False):
             im4 = imc_clean[y-isz:y+isz, x-isz:x+isz]
             col = [int(ii) for ii in cv.mean(im4)[:3]]
             pads_bgr[j,i,:] = col
-
+            cv.rectangle(imc, (x-isz, y-isz), (x+isz, y+isz), (0,0,255), 1)
+            
     for i in range(2):
         for j in range(8):
             x = int(sbgrid[i][j][0])
@@ -707,6 +738,7 @@ def deluge_qr_img(img, dbg=False):
             im4 = imc_clean[y-isz:y+isz, x-isz:x+isz]
             col = [int(ii) for ii in cv.mean(im4)[:3]]
             pads_bgr[j,i+16,:] = col
+            cv.rectangle(imc, (x-isz, y-isz), (x+isz, y+isz), (0,0,255), 1)
 
     out = [0]*18
 
