@@ -64,12 +64,11 @@ async def on_message(message):
                     _, img_encoded = cv2.imencode('.png', overlay)
                     img_bytes = img_encoded.tobytes()
                     if len(matching_commits) == 1:
-                        ghmsg = gh_url+matching_commits[0]
+                        ghmsg = matching_commits[0]
                     else:
                         ghmsg = "I couldn't find a recent matching commit."
                         
                     await message.channel.send(content = f'Thanks for the image {message.author.mention}!, '+
-                                               f'it decodes as:\n{st}\n'+ ghmsg,
-                                               file = discord.File(io.BytesIO(img_bytes), 'deluge_qr_decode.png'))
+                                               f'it decodes as:\n{st}\n' + ghmsg)
                         
 client.run(discord_token)
