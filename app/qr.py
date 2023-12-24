@@ -6,6 +6,8 @@ from statistics import mode
 from dataclasses import dataclass
 from bisect import *
 import requests
+import github
+import os
 
 ERODE_HIGH = 0
 ERODE_LOW = 1
@@ -236,14 +238,18 @@ def label_grid_points(pads, imc):
             c = (0, 93, 255)
             ng = ng + 1
             gridpads.append(kp)
+            x,y = kp.ixy()
+            for ign in kp.neighbours:
+                x2,y2 = pads[ign].ixy()  
+                cv.line(imc, (x,y), (x2, y2), c, thickness=3, lineType=cv.LINE_AA)
         else:
             c = (255, 192, 0)
         
-        x,y = kp.ixy()
-        if len(zx)>= 4:
-            for i in range(4):
-                x2,y2 = pads[zx[i][0]].ixy()  
-                cv.line(imc, (x,y), (x2, y2), c, thickness=2, lineType=cv.LINE_AA)
+            x,y = kp.ixy()
+            if len(zx)>= 4:
+                for i in range(4):
+                    x2,y2 = pads[zx[i][0]].ixy()  
+                    cv.line(imc, (x,y), (x2, y2), c, thickness=1, lineType=cv.LINE_AA)
     return gridpads
 
 def locate_grid(im, imc, bwmin, bwmax):
@@ -284,34 +290,69 @@ def attempt_grid(im, imc, bwmin, bwmax, erode_amount, hole_fill):
 
 def get_cross_vectors(pads, pp):
     """
-    For the 4 closest neighbours to padpoint pp, return
-    a list of 4 unit vectors pointing at them from pp.
+    For the up to 4 closest neighbours to padpoint pp, return
+    a list of unit vectors + distances pointing at them from pp.
     """
     x,y = pp.ixy()
     dvs = []
-    for i in range(4):
+    dsts = []
+    for i in range(min(4, len(pp.neighbours))):
         x2,y2 = pads[pp.neighbours[i]].ixy()
         dv = [x2-x,y2-y]
-        dv = [d / math.sqrt(np.dot(dv,dv)) for d in dv]
+        dst = math.sqrt(np.dot(dv,dv))
+        dv = [d / dst for d in dv]
         dvs.append(dv)
-    return dvs
+        dsts.append(dst)
+    return dvs, dsts
 
 def point_is_gridlike(pads, kp):
     """
-    Determines if a padpoint look 'gridlike'. It's 4 closes
+    Determines if a padpoint looks 'gridlike'. It's 4 closest
     neighbours should form vectors that form a cross. Build the
     vectors and label it gridlike if the 1st vector has two others
     at right angles to it and another pointing in the opposing direction.
     """
-    if len(kp.neighbours) < 4:
+    if len(kp.neighbours) < 3:
         return False
-    dvs = get_cross_vectors(pads, kp)
+    dvs, dsts = get_cross_vectors(pads, kp)
+    compare = [-1.0, 0.0, 0.0]
+    compare2 = [0.0, 1.0, -1.0]
+    tol = 0.2
+    sums = []
+    pairs=[]
+    for i in range(len(dvs)):
+        found = [0,0,0]
+        pairs.append(set())
+        for j in range(len(dvs)):
+            if i != j:
+                dt = np.dot(dvs[i], dvs[j])
+                dvir = [dvs[i][1], -dvs[i][0]]
+                dtr = np.dot(dvir, dvs[j])
+                for k in range(3):
+                    if abs(compare[k] - dt) < tol and abs(compare2[k]-dtr) < tol and found[k] == 0:
+                        found[k] = 1
+                        pairs[-1].add(i)
+                        pairs[-1].add(j)
 
+        sums.append(sum(found))
+   
+    if max(sums)>=2:
+        ibest = np.argmax(sums)
+        used = list(pairs[ibest])
+        used.sort()
+        kp.neighbours = [kp.neighbours[i] for i in used]
+        dsts2 = [dsts[i] for i in used]
+        if (max(dsts2)/min(dsts2) < 1.2):
+            return True
+
+    return False
+
+def old():
     dts = []
     for i in range(3):
         dts.append(np.dot(dvs[i], dvs[3]))
     dts.sort()
-    tol = 0.2
+    
     if abs(-1.0 - dts[0]) < tol and abs(dts[1])< tol and abs(dts[2])<tol:
         return True
     else:
@@ -323,10 +364,10 @@ def orient_to_grid(pads, kp, tvect):
     This sorts the 1st 4 neighbours into the order
     +U, +V, -U, -V
     """
-    dvs = get_cross_vectors(pads, kp)
+    dvs, dsts = get_cross_vectors(pads, kp)
 
     dis = [-1000]*4
-    for i in range(4):
+    for i in range(len(dvs)):
         gdir = np.dot(dvs[i], tvect)
         if abs(gdir[0]) > abs(gdir[1]):
             # U
@@ -343,6 +384,15 @@ def orient_to_grid(pads, kp, tvect):
     if sum(dis) == 6:
         kp.neighbours = [kp.neighbours[j] for j in dis]
         pads[kp.i].oriented = True
+    elif sum(dis) > -1000:
+        ng2 = []
+        for j in dis:
+            if j >= 0:
+                ng2.append(kp.neighbours[j])
+            else:
+                ng2.append(None)
+        kp.neighbours = ng2[:]
+        pads[kp.i].oriented = True
     else:
         print(kp, dvs)
         #raise Exception("Grid like point failed to orient")
@@ -354,6 +404,7 @@ def flood_fill_uv_grid(pads, gridpads):
     gridlike pads. They are labelled with a u and v coordinate in
     their group, and and the id of the largest group is returned
     """
+    grpmax = None
     fmax = 0
     gpmax = -1
     grp = 0
@@ -380,6 +431,8 @@ def flood_fill_uv_grid(pads, gridpads):
             if kp.oriented:
                 for j in range(4):
                     k = kp.neighbours[j]
+                    if k is None:
+                        continue
                     kp2 = pads[k]
                     if kp2.u is None and kp2.oriented:
                         nflood = nflood + 1
@@ -404,7 +457,7 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
     """
     expand = [1,1,-1,-1]
     nmatches = [-1,-1,-1,-1]
-    
+    hmg = None
     while sum(nmatches) != 0:
 
         snaps = [[], [], [], []]
@@ -422,10 +475,13 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
                 if height >= 7 or width >= 15:
                     nmatches[i] = 0
                     continue
+            if height >= 15:
+                nmatches[i] = 0
+                continue
                
             row = U + expand[i]
 
-            # Count how many of the saw openCV keypoints we can
+            # Count how many of the raw openCV keypoints we can
             # snap to in the current direction if we expand the grid.
             nmatches[i] = 0
             for j in range(min(R,L), max(R,L)+1):
@@ -454,7 +510,13 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
             # Re score all directions, since this expansion may
             # change the scores on the sides. 
             nmatches = [-1,-1,-1,-1]
+
         #return limits, grid, hmg
+    if hmg is None:
+        hmg = homography_from_partial_grid(grppnts)
+        invh = np.linalg.pinv(hmg)
+        grid = cv.perspectiveTransform(np.array([wide_uvgrid.reshape((-1,2))]), invh).reshape(wide_uvgrid.shape)
+    
     return limits, grid, hmg
 
 
@@ -498,32 +560,62 @@ def draw_uvgrid(img, grid, uvs, coords = False, size = 14, colour = (255, 123, 0
                 cv.putText(img, f"{i} {j}", (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,255))
                 cv.putText(img, f"{int(uvs[i,j,0])} {int(uvs[i,j,1])}", (x,y+15), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,0))
 
+def trim_partial_grid(convex_pads):
+    altered = False
+    
+    extents = [min(convex_pads, key=lambda k:k.u).u,
+                max(convex_pads, key=lambda k:k.u).u,
+                min(convex_pads, key=lambda k:k.v).v,
+                max(convex_pads, key=lambda k:k.v).v]
+    
+    for u in range(extents[0], extents[1]+1):
+        row = [pnt for pnt in convex_pads if pnt.u == u]
+        if len(row) == 1 and row[0] in convex_pads:
+            convex_pads.remove(row[0])
+            altered = True
+    for v in range(extents[2], extents[3]+1):
+        row = [pnt for pnt in convex_pads if pnt.v == v]
+        if len(row) == 1 and row[0] in convex_pads:
+            convex_pads.remove(row[0])
+            altered = True
+    return convex_pads, altered
+
+
 def homography_from_partial_grid(padpoints):
+    global img_clean
+
+    more = True
     convex_pads = padpoints[:]
 
-    extents = [min(padpoints, key=lambda k:k.u).u,
-               max(padpoints, key=lambda k:k.u).u,
-               min(padpoints, key=lambda k:k.v).v,
-               max(padpoints, key=lambda k:k.v).v]
+    while more:
+        more = False
 
-    for u in range(extents[0], extents[1]+1):
-        row = [pnt for pnt in padpoints if pnt.u == u]
-        if len(row) == 1:
-            convex_pads.remove(row[0])
-    for v in range(extents[2], extents[3]+1):
-        row = [pnt for pnt in padpoints if pnt.v == v]
-        if len(row) == 1:
-            convex_pads.remove(row[0])
-            
-    corners = [min(convex_pads, key=lambda k:k.u+k.v),
-               max(convex_pads, key=lambda k:k.u-k.v),
-               max(convex_pads, key=lambda k:k.u+k.v),
-               min(convex_pads, key=lambda k:k.u-k.v)]
-    px_corners = [[kp.kp.pt[0], kp.kp.pt[1]] for kp in corners]
-    grid_corners = [[kp.u, kp.v] for kp in corners]
+        # Find corners of the the available points - for a neat rectangle
+        # this sweeps the u+v = constant and u-v = constant lines to get the corners
+        # For a diamond of points it risks finding the same corner for a true diagonal
+        # sweep so we tilt the sweep lines by a tiny amount to favour clockwise corners     
+        corners = [min(convex_pads, key=lambda k:1.05*k.u+0.95*k.v),
+                max(convex_pads, key=lambda k:0.95*k.u-1.05*k.v),
+                max(convex_pads, key=lambda k:1.05*k.u+0.95*k.v),
+                min(convex_pads, key=lambda k:0.95*k.u-1.05*k.v)]
+        
+        uvcorners = [(c.u , c.v) for c in corners]
+        unique_corners = set(uvcorners)
+        if len(unique_corners) < 4:
+            convex_pads, altered = trim_partial_grid(convex_pads)
 
-    # Find the ditortion between this (possibly partial) grid and the image
-    hmg, status = cv.findHomography(np.array(px_corners), np.array(grid_corners), 0)
+            if not altered:
+                raise Exception("Failed to find homography from partial grid")
+            else:
+                more = True
+                continue
+
+        px_corners = [[kp.kp.pt[0], kp.kp.pt[1]] for kp in corners]
+        grid_corners = [[kp.u, kp.v] for kp in corners]
+
+        # Find the ditortion between this (possibly partial) grid and the image
+        hmg, status = cv.findHomography(np.array(px_corners), np.array(grid_corners), 0)
+
     return hmg
 
 def deluge_qr(imgfilename, dbg=True):
@@ -549,7 +641,9 @@ def deluge_qr_img(img, dbg=False):
     Identifies the deluge button grid in a photo and reads
     off the crash handler pointers and github commit hash.
     """
+    global img_clean
     imc = img
+    img_clean = img.copy()
     im = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     im = (255-im)
 
@@ -612,6 +706,10 @@ def deluge_qr_img(img, dbg=False):
     maxu = max(us)
     maxv = max(vs)
 
+    if dbg:
+        draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
+        draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
+        draw("I", imdbg, pads, lambda k:str(k.i))
     
     # Find the ditortion between this (possibly partial) grid and the image
     hmg = homography_from_partial_grid(grppnts)
@@ -629,6 +727,10 @@ def deluge_qr_img(img, dbg=False):
     # and which parts of the grid we have already found.
     wide_uvgrid = build_grid(minu-missing_u,maxu+missing_u,minv-missing_v,maxv+missing_v) 
     grid = cv.perspectiveTransform(np.array([wide_uvgrid.reshape((-1,2))]), invh).reshape(wide_uvgrid.shape)
+    if dbg:
+        imcgrid = imc.copy()
+        draw_uvgrid(imcgrid, grid, wide_uvgrid, coords=False)
+        cv.imshow("sdfkjl", imcgrid)
 
     maxu -= int(wide_uvgrid[0][0][0])
     maxv -= int(wide_uvgrid[0][0][1])
@@ -643,15 +745,20 @@ def deluge_qr_img(img, dbg=False):
         
     # Push the grid out into other parts of the image and snap it onto
     # the keypoints found there
+    
     limits = [maxu, maxv, minu, minv]  
     limits, grid, hmg = expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd)
-
     maxu, maxv, minu, minv = tuple(limits)
+
     uvgrid = wide_uvgrid[minu:maxu+1, minv:maxv+1,:] 
     xygrid = grid[minu:maxu+1, minv:maxv+1,:]
 
-    imblk2 = np.zeros(imc.shape, dtype=np.uint8)
-    draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
+    if dbg:
+        imblk2 = np.zeros(imc.shape, dtype=np.uint8)
+        draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
+        
+        draw("G2", imdbg, grppnts, lambda k:str(k.i))
+        cv.imshow("G2", imdbg)
     
     if maxu-minu < maxv-minv:
         uvgrid = np.flip(np.transpose(uvgrid, axes=(1,0,2)), axis=2)
@@ -833,7 +940,11 @@ def deluge_qr_img(img, dbg=False):
 
 if __name__ == "__main__":
     try:
-        deluge_qr(sys.argv[1])
+        code, comp = deluge_qr(sys.argv[1])
+        commit_fragment = f"{code[4]:04x}"
+        st = f"0x{commit_fragment}"
+        print(st)
+ 
     except Exception as e:
         # Pause so we can inspect the debug images.
         cv.waitKey(0)

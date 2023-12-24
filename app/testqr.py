@@ -120,8 +120,16 @@ class SimpleTestCase(unittest.TestCase):
         assert code == [0X200DC968, 0X200B8094, 0X2007A56F, 0X2011103D, 0XFE31]
 
     def testqr27(self):
-        code, image = qr.deluge_qr("../tests/qr27.jpg", dbg=False)
+        code, image = qr.deluge_qr("../tests/qr27.png", dbg=False)
         assert code == [0X20096A04, 0X20082F00, 0X2004CCDC, 0X20044F88, 0XFE31]
-        
+
+    def testqr28(self):
+        code, image = qr.deluge_qr("../tests/qr28.jpg", dbg=False)
+        assert code == [0x20051543, 0x201217FA, 0x2011AD34, 0x2004FB47, 0xFA10]
+
+    def testqr29(self):
+        code, image = qr.deluge_qr("../tests/qr29.jpg", dbg=False)
+        assert code == [0x20119B05, 0x20119C27, 0x200FF423, 0x20098C8C, 0x7145]
+
 if __name__ == "__main__":
     unittest.main()  # run all tests
