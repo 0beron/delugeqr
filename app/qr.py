@@ -2,24 +2,25 @@ import cv2 as cv
 import numpy as np
 import math
 import sys
+import hough
 from statistics import mode
 from dataclasses import dataclass, astuple
 from bisect import *
 import requests
+import argparse
+import qrdebug
+from qrdebug import circle
 import github
 import os
 from numpy.random import default_rng
 rng = default_rng()
- 
+
 ERODE_HIGH = 0
 ERODE_LOW = 1
 
-GRID = 0
-HOUGH = 1
-
-def circle(img,xy,sz,c, thickness =2):
-    x,y = xy
-    cv.circle(img, (int(x),int(y)), sz, c, thickness=thickness, lineType=cv.LINE_AA)
+BOTH = 0
+GRID = 1
+HOUGH = 2
 
 def kpdst(kp1, kp2):
     """
@@ -70,21 +71,6 @@ class Padpoint:
         Get integer coords for easy drawing.
         """
         return (int(self.kp.pt[0]), int(self.kp.pt[1]))
-
-@dataclass
-class Line:
-    r: float
-    theta: float
-    ids: list[int]
-    ts: list[float]
-    us: list[float] = None
-    ud: list[float] = None
-    uf: float = None
-    ufo: float = None
-
-def enlarge(img, factor):
-    w,h = img.shape[:2]
-    return cv.resize(img, (h*factor, w*factor), interpolation= cv.INTER_NEAREST)
 
 def find_blobs(im, bwmin, bwmax, binary=False):
     """
@@ -164,6 +150,10 @@ def threshold_erode(im, erode_amount, fill_holes):
     return im2
 
 def fill_holes(im):
+    """
+    Fills in holes in the thresholded image, to try and
+    repair pads that have become hollow.
+    """
     im2inv = cv.bitwise_not(im)
     contour, hier = cv.findContours(im2inv,cv.RETR_CCOMP,cv.CHAIN_APPROX_SIMPLE)
             
@@ -275,6 +265,10 @@ def label_grid_points(pads, imc):
     return gridpads
 
 def locate_grid(im, imc, bwmin, bwmax):
+    """
+    Try various combinations of thresholding / erosion / hole filling
+    and return the results that yield the most potential pads.
+    """
     results = [attempt_grid(im, imc, bwmin, bwmax, ERODE_HIGH, False),
                attempt_grid(im, imc, bwmin, bwmax, ERODE_HIGH, True), 
         attempt_grid(im, imc, bwmin, bwmax, ERODE_LOW, False), 
@@ -286,14 +280,21 @@ def locate_grid(im, imc, bwmin, bwmax):
     return results[best]
 
 def attempt_grid(im, imc, bwmin, bwmax, erode_amount, hole_fill):
+    """
+    Threshold the image looking for pads
+      im - black and white image to threshold
+      imc - colour image for debug
+      bwmin - lower bound on pad size in pixels
+      bwmax - upper bound on pad size in pixels
+      erode_amount - ERODE_LOW or ERODE_HIGH
+      hole_fill - whether to fill holes in the threshold image
+    """
     dots = threshold_erode(im, erode_amount, hole_fill)
     if hole_fill:
         dots = fill_holes(dots)
     
     keypoints = find_blobs(dots, bwmin, bwmax, binary=True)
    
-    #keypoints = find_blobs(im, bwmin, bwmax)
-
     skp = list(keypoints)
     skp.sort(key= lambda kp:kp.pt)
     imc2 = imc.copy()
@@ -369,16 +370,6 @@ def point_is_gridlike(pads, kp):
 
     return False
 
-def old():
-    dts = []
-    for i in range(3):
-        dts.append(np.dot(dvs[i], dvs[3]))
-    dts.sort()
-    
-    if abs(-1.0 - dts[0]) < tol and abs(dts[1])< tol and abs(dts[2])<tol:
-        return True
-    else:
-        return False
 
 def orient_to_grid(pads, kp, tvect):
     """
@@ -470,248 +461,6 @@ def flood_fill_uv_grid(pads, gridpads):
         grp += 1
     return grpmax
 
-def hough_grid(w, h, pads):
-    global img_clean
-
-    res = min([min(p.dists) for p in pads if p.dists!=[]])
-
-    xs = np.array([kp.kp.pt[0] for kp in pads])
-    ys = np.array([kp.kp.pt[1] for kp in pads])
-    
-    all_pads_xy =  np.array([[kp.kp.pt[0], kp.kp.pt[1]] for kp in pads])
-
-    nr = 500
-    maxr = np.sqrt(w**2 + h**2)
-
-    dr = (2*maxr) / nr
-
-    ntheta = 300
-
-    hough = np.zeros((nr, ntheta))
-
-    for itheta in range(ntheta):
-        theta = itheta * math.pi / ntheta
-        #theta = math.pi/4
-        pads_dist = - xs * np.cos(theta) - ys * np.sin(theta)
-        minp = np.min(pads_dist)
-        maxp = np.max(pads_dist)
-        for gp in pads:
-            r = pads_dist[gp.i]
-            ir = int((maxr+r) / dr)
-            c = np.sum(np.abs(pads_dist - r) < res/10)
-
-            if c > 3:
-                hough[ir][itheta] += float(c)
-                #print(gp.i, r, theta, c, [i for i in range(len(pads)) if (abs(pads_dist[i]-r)< res/10)])
-
-    hough /= np.max(hough)
-    #cv.imshow("HHH", enlarge(hough,3))
-
-    image = img_clean.copy()
-
-    hc = hough.copy()
-    hc2 = hough.copy()  
-    ang = None
-    lines = []
-    for i in range(8):
-        mx = np.unravel_index(np.argmax(hc), hc.shape)
-
-        mxr = (mx[0]*dr) - maxr
-        mxtheta = (mx[1]*math.pi/ntheta)
-
-        r = mxr
-        theta = mxtheta# + math.pi
-
-        setrect(hc,mx[1],mx[0],4,2,0.0)
-        setrect(hc2,mx[1],mx[0],4,2,1.0)
-        
-        if ang is None:
-            ang = theta
-        else:
-            dang = abs(ang-theta)
-            if not (abs(dang) < 0.2 or abs(dang-math.pi) < 0.2):
-                continue
-
-        if r > 0.0:
-            r = -r
-            theta -= math.pi
-
-        pads_dist = - xs * np.cos(theta) - ys * np.sin(theta)
-        
-        ids = [i for i in range(len(pads)) if (abs(pads_dist[i]-r)< res/2)]
-
-        dup = False
-        for line in lines:
-            for id in line.ids:
-                if id in ids:
-                    dup = True
-        if dup:
-            continue
-
-        line = Line(r, theta, [], [])
-        ts = [line_project(line, xs[i], ys[i]) for i in ids]
-        
-        pts = list(zip(ids, ts))
-        pts.sort(key=lambda x:x[1])
-        
-        ids, ts = zip(*pts)
-        
-        line.ids = ids
-        line.ts = ts       
-        lines.append(line)
-        draw_line(image, line)
-        
-
-    lines.sort(key=lambda x:x.r)
-    #for line in lines:
-        #print(line)
-    
-    match_lines(lines,pads)
-    
-    #cv.imshow("HHH2", enlarge(hc,1))
-    #cv.imshow("HHH3", enlarge(hc2,1))
-    #cv.imshow("line", image)
-
-    #cv.waitKey(0)
-    return lines
-
-def setrect(image, x, y, xb, yb, val):
-    height, width = image.shape
-    c = [x,y]
-    b = [xb,yb]
-    rng = [None,None]
-    # Calculate the coordinates of the top-left and bottom-right corners of the rectangle
-    for crd in [0,1]:
-        lw = int(c[crd] - b[crd])
-        hi = int(c[crd] + b[crd])
-        mx = image.shape[1-crd]
-        if lw < 0:
-            rng[crd] = [[0,hi],[mx+lw,mx]]
-        elif hi > mx:
-            rng[crd] = [[lw,mx],[0,hi-mx]]
-        else:
-            rng[crd] = [[lw,hi]]
-    for xr in rng[0]:
-        for yr in rng[1]:
-            image[yr[0]:yr[1], xr[0]:xr[1]] = val
-
-def line_eval(line, t):
-    r = line.r
-    theta = line.theta
-    v = - t *np.array([-np.sin(theta), np.cos(theta)]) \
-      - r * np.array([np.cos(theta), np.sin(theta)])
-    return v[0], v[1]
-
-def line_project(line, x, y):
-    theta = line.theta
-    return x *np.sin(theta) - y*np.cos(theta)
-    
-def pr(ar):
-    print([f"{v:2.2f}" for v in ar])
-
-def match_lines(lines, pads):
-    imgm = img_clean.copy()
-
-    rs = [l.r for l in lines]
-    vs, _, _, _ = fit_integer(rs,8)
-
-    sep = 0
-    for i in range(len(lines)-1):
-        l1 = lines[i]
-        l2 = lines[i+1]
-        sep += abs(l1.r-l2.r)/(vs[i+1]-vs[i])
-
-    sep /= len(lines)-1
-
-    toff = 0
-    for i, line in enumerate(lines):
-        ts = line.ts
-        line.us, line.ud, line.uf, line.ufo = fit_integer(ts,20)
-
-    med_factor = [line.uf for line in lines][len(lines)//2]
-    lines = [line for line in lines if abs(line.uf-med_factor)/med_factor < 0.05]
-
-    rs = [l.r for l in lines]
-    vs, _, _, _ = fit_integer(rs,8)
-
-    for i, line in enumerate(lines):
-        #draw_annotated_line(imgm,line)
-        if i > 0:
-            udm1 = lines[i-1].ud
-            for j in range(len(udm1)):
-                if udm1[j] < 0.15:
-                    tcmp = lines[i-1].ts[j]
-                    joff = lines[i-1].us[j]
-                    break
-                  
-            x,y = line_eval(lines[i-1], tcmp)
-            circle(imgm, (x,y), 6, (0,0,255))
-            tn = line_project(line, x, y)
-            x,y = line_eval(lines[i], tn)
-            circle(imgm, (x,y), 6, (0,255,0))
-            toff += (int(np.round((tn - line.ufo)/line.uf))  - joff)
-
-
-        for j,id in enumerate(line.ids):
-            if line.ud[j] < 0.15:
-                pads[id].u = int(line.us[j]-toff)
-                pads[id].v = int(7-vs[i])
-                pads[id].group = 1
-    #cv.imshow("ANNOT", imgm)
-    #cv.waitKey(0)
-
-def fit_integer(flts, mx):
-    gaps = [flts[i-1]-flts[i] for i in range(len(flts)-1)]
-    match = np.array(flts)
-    cbest = 0
-    sbest = 1000.0
-    rbest = None
-    dbest = None
-    fbest = None
-    obest = None
-    for ileft in range(0,len(flts)):
-        for iright in range(len(flts)-1, ileft+1, -1):
-            imin = max(1,iright-ileft - 2)
-            imax = mx
-            #print(imin, imax)
-            for factor in range(imin,imax+1):
-                m2 = (match-match[ileft])
-                div = (m2[iright] / factor)
-                m2 /= div
-                rr = np.round(m2)  
-                if rr[-1]-rr[0] > mx:
-                    continue
-                c = np.sum(np.abs(rr - m2) < 0.1)
-                sqdr = np.sum((rr-m2)**2.0)
-                if sqdr < sbest:
-                    cbest = c
-                    sbest = sqdr
-                    fbest = div
-                    obest = match[ileft] + rr[0]*fbest
-                    rbest = [r - rr[0] for r in rr]
-                    dbest = np.abs(rr - m2)
-                #print("    B:", ileft, iright, c, factor, sqdr)
-                #print("    ", [f"{v:.2f}" for v in m2])
-                #print("    ",[f"{v:.2f}" for v in np.abs(rr - m2)])
-    return rbest, dbest, fbest, obest
-
-def draw_annotated_line(img, line):
-    draw_line(img,line)
-    for i in range(18):
-        t = (i-0.5)*line.uf + line.ufo
-        circle(img, line_eval(line,t), 2, (128,0,255))
-
-def draw_line(img, line):
-    r, theta, ids, ts, _, _, _, _ = astuple(line)
-    x1,y1 = [int(i) for i in line_eval(line, ts[0])]
-    x2,y2 = [int(i) for i in line_eval(line, ts[-1])]
-    
-    cv.line(img, (x1, y1), (x2, y2), (0,255,255), 2)
-    
-    for t in ts:
-        circle(img, line_eval(line, t), 6, (255,255,0))
-
-
 def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
     """
     Given an incomplete group of grid pads, tries to widen
@@ -783,48 +532,14 @@ def expand_grid(pads, wide_uvgrid, grppnts, limits, grid, skp, maxd):
     
     return limits, grid, hmg
 
-
-def draw(label, img, keypoints, strfunc):
-    """
-    Draws an image with keypoints and text annotation
-    """
-    img2 = img.copy()
-    img2 = (img2 // 2) + 126
-    for kp in keypoints:
-        x = int(kp.kp.pt[0])
-        y = int(kp.kp.pt[1])
-        cv.putText(img2, strfunc(kp), (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255))
-        cv.imshow(label, img2)
-
-def draw_cross(img, x, y, tv):
-    """
-    Draws a cross on the image (to show basis vectors from PCA)
-    """
-    x = int(x)
-    y = int(y)
-    cv.line(img, (x-int(tv[0][0]*10),y-int(tv[0][1]*10)), (x+int(tv[0][0]*40),y+int(tv[0][1]*40)), (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
-    cv.line(img, (x-int(tv[1][0]*10),y-int(tv[1][1]*10)), (x+int(tv[1][0]*40),y+int(tv[1][1]*40)), (0, 255, 0), thickness=4, lineType=cv.LINE_AA)
-
-def draw_uvgrid(img, grid, uvs, coords = False, size = 14, colour = (255, 123, 0), thickness=1):
-    """
-    Debug display of grids of points.
-    img -  image to draw to
-    grid - grid of point in x-y (pixel) space
-    uvs -  corresponding coords in U/V space
-           (aligned with the pad grid, but possibly offset/flipped/rotated)
-    coords - boolean falg of whether to also draw coords as text.
-    size/colour/thickness - pass through to openCV drawing routines
-    """
-    for i in range(grid.shape[0]):
-        for j in range(grid.shape[1]):
-            x = int(grid[i][j][0])
-            y = int(grid[i][j][1]) 
-            circle(img, grid[i][j], size, colour, thickness=thickness)
-            if coords:
-                cv.putText(img, f"{i} {j}", (x,y), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,255))
-                cv.putText(img, f"{int(uvs[i,j,0])} {int(uvs[i,j,1])}", (x,y+15), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,0))
-
 def trim_partial_grid(convex_pads):
+    """
+    Finds rows and columns of a partial grid and drops
+    those that have only one entry, since these are more
+    likely to cause the corner finding process to choose
+    this one pad for more than one corner, which makes the
+    keystone/homography degenerate.
+    """
     altered = False
     
     extents = [min(convex_pads, key=lambda k:k.u).u,
@@ -846,8 +561,12 @@ def trim_partial_grid(convex_pads):
 
 
 def homography_from_partial_grid(padpoints):
-    global img_clean
-
+    """
+    Finds 4 corners from the list of supplied padpoints, and
+    calculates the homography matrix between x/y (pixel) space
+    and u/v (pad grid space). The list of padpoints must have
+    u and v coordinates set.
+    """
     more = True
     convex_pads = padpoints[:]
 
@@ -882,14 +601,14 @@ def homography_from_partial_grid(padpoints):
 
     return hmg
 
-def deluge_qr(imgfilename, dbg=True):
+def deluge_qr(imgfilename, method=BOTH, dbg=True):
     """
     Reads deluge crash handler patterns from image
     files.
     """
-    return deluge_qr_img(cv.imread(imgfilename), dbg=dbg)
+    return deluge_qr_img(cv.imread(imgfilename), method=method, dbg=dbg)
 
-def deluge_qr_url(url, dbg=False):
+def deluge_qr_url(url, method=BOTH, dbg=False):
     """
     Grab an image from the given URL and attempt to read a deluge
     crash handler pattern.
@@ -898,11 +617,19 @@ def deluge_qr_url(url, dbg=False):
     image_bytes = response.content
     nparr = np.frombuffer(image_bytes, np.uint8)
     image = cv.imdecode(nparr, cv.IMREAD_COLOR)
-    return deluge_qr_img(image)
+    return deluge_qr_img(image, method=method)
 
 
-def deluge_qr_img(img, dbg=False):
-    for method in [GRID, HOUGH]:
+def deluge_qr_img(img, method=BOTH, dbg=False):
+    """
+    Try both detection methods in turn to detect a deluge QR crash pattern
+    """
+    if method == BOTH:
+        methods = [GRID, HOUGH]
+    else:
+        methods = [method]
+
+    for method in methods:
         code, comp = deluge_qr_img_method(img, method=method, dbg=dbg)
         if len(code) == 5:
             if all([addr == 0 or 
@@ -916,7 +643,6 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     Identifies the deluge button grid in a photo and reads
     off the crash handler pointers and github commit hash.
     """
-    global img_clean
     imc = img
 
     im = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
@@ -935,7 +661,8 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     imc = cv.resize(imc, (w, h), interpolation= cv.INTER_LINEAR)
     imdbg = cv.cvtColor(im, cv.COLOR_GRAY2BGR)
     imc_clean = imc.copy()
-    img_clean = imc.copy() 
+    
+    qrdebug.img_clean = imc.copy() 
     # Lower and upper bound on deluge button sizes, assuming the deluge takes up most of the frame.
     bwmax = max(w,h) // 20
     bwmin = bwmax // 3.5
@@ -957,7 +684,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     v, vect = np.linalg.eig(gridca)
     tvect = np.transpose(vect)
 
-    draw_cross(imc, w//2, h//2, tvect)
+    qrdebug.draw_cross(imc, w//2, h//2, tvect)
 
     if dbg:
         cv.imshow("aft DMF", imc)
@@ -965,7 +692,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
         cv.imshow("TDD", d2)
 
     if method == HOUGH:
-        hough_grid( w,h, pads)
+        hough.hough_grid( w,h, pads)
         grpmax = 1
     else:
         for kp in gridpads:
@@ -997,9 +724,9 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
         vwid = (maxv-minv)
     
     if dbg:
-        draw("I", imdbg, pads, lambda k:str(k.i))
-        draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
-        draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
+        qrdebug.draw("I", imdbg, pads, lambda k:str(k.i))
+        qrdebug.draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
+        qrdebug.draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
     
     # Find the distortion between this (possibly partial) grid and the image
     hmg = homography_from_partial_grid(grppnts)
@@ -1016,7 +743,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     grid = cv.perspectiveTransform(np.array([wide_uvgrid.reshape((-1,2))]), invh).reshape(wide_uvgrid.shape)
     if dbg:
         imcgrid = imc.copy()
-        draw_uvgrid(imcgrid, grid, wide_uvgrid, coords=False)
+        qrdebug.draw_uvgrid(imcgrid, grid, wide_uvgrid, coords=False)
         cv.imshow("sdfkjl", imcgrid)
 
     maxu -= int(wide_uvgrid[0][0][0])
@@ -1025,9 +752,9 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     minv -= int(wide_uvgrid[0][0][1])
 
     if dbg:
-        draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
-        draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
-        draw("I", imdbg, pads, lambda k:str(k.i))
+        qrdebug.draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
+        qrdebug.draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
+        qrdebug.draw("I", imdbg, pads, lambda k:str(k.i))
     
     # Push the grid out into other parts of the image and snap it onto
     # the keypoints found there
@@ -1040,9 +767,9 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
 
     if dbg:
         imblk2 = np.zeros(imc.shape, dtype=np.uint8)
-        draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
+        qrdebug.draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
         
-        draw("G2", imdbg, grppnts, lambda k:str(k.i))
+        qrdebug.draw("G2", imdbg, grppnts, lambda k:str(k.i))
         cv.imshow("G2", imdbg)
     
     if maxu-minu < maxv-minv:
@@ -1099,8 +826,8 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
             sbgrid = np.flip(sbgrid, axis=1)
 
     imblk = np.zeros(imc.shape, dtype=np.uint8)
-    draw_uvgrid(imblk, xygrid, uvgrid, coords=True)
-    draw_uvgrid(imblk, sbgrid, uvgrid, coords=True)
+    qrdebug.draw_uvgrid(imblk, xygrid, uvgrid, coords=True)
+    qrdebug.draw_uvgrid(imblk, sbgrid, uvgrid, coords=True)
   
     # Re-do the homography to make sure it's right way up
     hmg, status = cv.findHomography(
@@ -1157,12 +884,12 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
         r, pads_v_threshold = cv.threshold(pads_v, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
     else:
         r, pads_v_threshold = cv.threshold(pads_grey, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
-    print("")
+
     for ix in range(18):
         for iy in range(8):
             if pads_v_threshold[iy][ix] > 128:
                 out[ix] += (0x1 << iy)
-    
+    print("")
     for iy in range(8):
         for ix in range(18):
             if ix == 16:
@@ -1241,8 +968,18 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     return f, comp
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Command line argument parser example')
+    parser.add_argument('-d', '--debug', action='store_true', help='Enable verbose debug output')
+    parser.add_argument('-m', '--method', choices=['grid', 'hough', 'both'],
+                         default='both', help='Choose grid detection method')
+    parser.add_argument('filename', type=str, help='Image to process')
+    args = parser.parse_args()
+
+    methods = {'grid':GRID, 'hough':HOUGH, 'both':BOTH}
+
     try:
-        code, comp = deluge_qr(sys.argv[1])
+        code, comp = deluge_qr(args.filename, method=methods[args.method], dbg=args.debug)
         commit_fragment = f"{code[4]:04x}"
         st = f"0x{commit_fragment}"
         print(st)
