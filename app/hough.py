@@ -6,6 +6,16 @@ from qrdebug import circle
 from dataclasses import dataclass, astuple
 
 @dataclass
+class IntegerFit:
+    """
+    A mapping from a list of floats to rounded integer values.
+    """    
+    result:       list[float] = None    # Rounded values
+    discrepancy:  list[float] = None    # Discrepancies from integer fitting
+    scale_factor: float = None          # Scale factor from u space to t space
+    offset:       float = None          # Offset in t
+
+@dataclass
 class Line:
     """
     A line of keypoints found in the image
@@ -14,11 +24,7 @@ class Line:
     theta: float              # Angle in radians from X-axis
     ids: list[int]            # Indices of keypoints on this line
     ts: list[float]           # T-values along this line
-    us: list[float] = None    # Rounded U values along this line
-    ud: list[float] = None    # Discrepancies from integer fitting
-    uf: float = None          # Scale factor from u space to t space
-    ufo: float = None         # Offset in t.
-
+    fit: IntegerFit = None    # Quantised U values mapped to T
 
 def hough_grid(w, h, pads):
     """
@@ -176,28 +182,25 @@ def match_lines(lines, pads):
     imgm = qrdebug.img_clean.copy()
 
     # Assign v-coordinates based on line spacing.
-    rs = [l.r for l in lines]
-    vs, _, _, _ = fit_integer(rs,8)
+    vfit = fit_integer([l.r for l in lines],8)
+
+    for line in lines:
+        line.fit = fit_integer(line.ts,20)
+
+    med_factor = [line.fit.scale_factor for line in lines][len(lines)//2]
+    lines = [line for line in lines if abs(line.fit.scale_factor-med_factor)/med_factor < 0.05]
+
+    vfit = fit_integer([l.r for l in lines],8)
 
     toff = 0
     for i, line in enumerate(lines):
-        ts = line.ts
-        line.us, line.ud, line.uf, line.ufo = fit_integer(ts,20)
-
-    med_factor = [line.uf for line in lines][len(lines)//2]
-    lines = [line for line in lines if abs(line.uf-med_factor)/med_factor < 0.05]
-
-    rs = [l.r for l in lines]
-    vs, _, _, _ = fit_integer(rs,8)
-
-    for i, line in enumerate(lines):
         #draw_annotated_line(imgm,line)
         if i > 0:
-            udm1 = lines[i-1].ud
+            udm1 = lines[i-1].fit.discrepancy
             for j in range(len(udm1)):
                 if udm1[j] < 0.15:
                     tcmp = lines[i-1].ts[j]
-                    joff = lines[i-1].us[j]
+                    joff = lines[i-1].fit.result[j]
                     break
                   
             x,y = line_eval(lines[i-1], tcmp)
@@ -205,24 +208,26 @@ def match_lines(lines, pads):
             tn = line_project(line, x, y)
             x,y = line_eval(lines[i], tn)
             circle(imgm, (x,y), 6, (0,255,0))
-            toff += (int(np.round((tn - line.ufo)/line.uf))  - joff)
+            toff += (int(np.round((tn - line.fit.offset)/line.fit.scale_factor))  - joff)
 
 
         for j,id in enumerate(line.ids):
-            if line.ud[j] < 0.15:
-                pads[id].u = int(line.us[j]-toff)
-                pads[id].v = int(7-vs[i])
+            if line.fit.discrepancy[j] < 0.15:
+                pads[id].u = int(line.fit.result[j]-toff)
+                pads[id].v = int(7-vfit.result[i])
                 pads[id].group = 1
     #cv.imshow("ANNOT", imgm)
     #cv.waitKey(0)
 
 def fit_integer(flts, mx):
+    """
+    Finds a least squares fit of a given list of floats, assumed to be
+    in ascending order, to a list of integer values.
+    """
     match = np.array(flts)
-    sbest = 1000.0
-    rbest = None
-    dbest = None
-    fbest = None
-    obest = None
+    fit = IntegerFit(None, None, None, None)
+    sbest = 100000.0
+    
     for ileft in range(0,len(flts)):
         for iright in range(len(flts)-1, ileft+1, -1):
             imin = max(1,iright-ileft - 2)
@@ -239,27 +244,26 @@ def fit_integer(flts, mx):
                 sqdr = np.sum((rr-m2)**2.0)
                 if sqdr < sbest:
                     sbest = sqdr
-                    fbest = div
-                    obest = match[ileft] + rr[0]*fbest
-                    rbest = [r - rr[0] for r in rr]
-                    dbest = np.abs(rr - m2)
+                    fit.scale_factor = div
+                    fit.offset = match[ileft] + rr[0]*div
+                    fit.result = [r - rr[0] for r in rr]
+                    fit.discrepancy = np.abs(rr - m2)
                 #print("    B:", ileft, iright, c, factor, sqdr)
                 #print("    ", [f"{v:.2f}" for v in m2])
                 #print("    ",[f"{v:.2f}" for v in np.abs(rr - m2)])
-    return rbest, dbest, fbest, obest
+    return fit
 
 def draw_annotated_line(img, line):
     draw_line(img,line)
     for i in range(18):
-        t = (i-0.5)*line.uf + line.ufo
+        t = (i-0.5)*line.fit.scale_factor + line.fit.offset
         circle(img, line_eval(line,t), 2, (128,0,255))
 
 def draw_line(img, line):
-    r, theta, ids, ts, _, _, _, _ = astuple(line)
-    x1,y1 = [int(i) for i in line_eval(line, ts[0])]
-    x2,y2 = [int(i) for i in line_eval(line, ts[-1])]
+    x1,y1 = [int(i) for i in line_eval(line, line.ts[0])]
+    x2,y2 = [int(i) for i in line_eval(line, line.ts[-1])]
     
     cv.line(img, (x1, y1), (x2, y2), (0,255,255), 2)
     
-    for t in ts:
+    for t in line.ts:
         circle(img, line_eval(line, t), 6, (255,255,0))

@@ -601,6 +601,15 @@ def homography_from_partial_grid(padpoints):
 
     return hmg
 
+def extents(grppnts):
+    us = [kp.u for kp in grppnts if kp.u is not None]
+    vs = [kp.v for kp in grppnts if kp.v is not None]
+    minu = min(us)
+    minv = min(vs)
+    maxu = max(us)
+    maxv = max(vs)
+    return minu, minv, maxu, maxv
+
 def deluge_qr(imgfilename, method=BOTH, dbg=True):
     """
     Reads deluge crash handler patterns from image
@@ -692,37 +701,32 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
         cv.imshow("TDD", d2)
 
     if method == HOUGH:
+        # Try finding the grid by looking for linear rows of possible pads
+        # This works well if there are many gaps to jump over that would
+        # disrupt the grid method, but is more susceptible to being thrown
+        # off by spurious keypoints that are off the grid.
         hough.hough_grid( w,h, pads)
         grpmax = 1
     else:
+        # Try finding the grid by looking for keypoints that form gridlike
+        # patterns. This relies on being able to distinguish both the lit 
+        # and unlit pads on the deluge. In dark images, or those using a
+        # faceplate overlay that isn't black, the hough method above may
+        # better.
         for kp in gridpads:
             orient_to_grid(pads, kp, vect)
 
         grpmax = flood_fill_uv_grid(pads, gridpads)
 
     grppnts = [gp for gp in gridpads if gp.group == grpmax]
+    minu, minv, maxu, maxv = extents(grppnts)
 
-    us = [kp.u for kp in grppnts if kp.u is not None]
-    vs = [kp.v for kp in grppnts if kp.v is not None]
-    minu = min(us)
-    minv = min(vs)
-    maxu = max(us)
-    maxv = max(vs)
-
-    uwid = (maxu-minu)
-    vwid = (maxv-minv)
-
-    if method == HOUGH and uwid > 12:
+    if method == HOUGH and maxu-minu > 12:
+        # Trim both edges off the potential grid, to avoid the
+        # status / audition pads, regardless of orientation.
         grppnts = [gp for gp in gridpads if gp.group == grpmax and gp.u>minu+3 and gp.u < maxu-3] 
-        us = [kp.u for kp in grppnts if kp.u is not None]
-        vs = [kp.v for kp in grppnts if kp.v is not None]
-        minu = min(us)
-        minv = min(vs)
-        maxu = max(us)
-        maxv = max(vs)
-        uwid = (maxu-minu)
-        vwid = (maxv-minv)
-    
+        minu, minv, maxu, maxv = extents(grppnts)
+   
     if dbg:
         qrdebug.draw("I", imdbg, pads, lambda k:str(k.i))
         qrdebug.draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
@@ -733,8 +737,8 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
 
     invh = np.linalg.pinv(hmg)
 
-    missing_u = 15-uwid
-    missing_v = 15-vwid
+    missing_u = 15-(maxu-minu)
+    missing_v = 15-(maxv-minv)
 
     # Cast a wider grid of u/v (pad grid) and x/y (pixel) coordinates, making
     # it wide enough to hold 18*6 pads, regardless of which direction they lie in
