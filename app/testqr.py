@@ -1,7 +1,6 @@
 import unittest
 import qr
 
-
 class SimpleTestCase(unittest.TestCase):
     def setUp(self):
         """Call before every test case."""
@@ -130,6 +129,22 @@ class SimpleTestCase(unittest.TestCase):
     def testqr29(self):
         code, image = qr.deluge_qr("../tests/qr29.jpg", dbg=False)
         assert code == [0x20119B05, 0x20119C27, 0x200FF423, 0x20098C8C, 0x7145]
+
+    def testqr30(self):
+        code, image = qr.deluge_qr("../tests/qr30.jpg", dbg=False)
+        assert code == [0x200AA500, 0x200AA668, 0x200AAF60, 0x20059729, 0xFE31]
+
+    def testqr31(self):
+        code, image = qr.deluge_qr("../tests/qr31.jpg", dbg=False)
+        assert code == [0x200D1ED0, 0x20082F00, 0x2004CCDC, 0x20044F88, 0xFE31]
+    
+    def testqr32(self):
+        code, image = qr.deluge_qr("../tests/qr32.jpg", dbg=False)
+        assert code == [0x200AFDBC, 0x2011506C, 0x200C70C8, 0x2010669C, 0xFE31]
+
+    def testqr33(self):
+        code, image = qr.deluge_qr("../tests/qr33.png", dbg=False)
+        assert code == [0x2011EAA0, 0x200F5544, 0x200F5568, 0x200F3E24, 0x84CE]
 
 if __name__ == "__main__":
     unittest.main()  # run all tests
