@@ -1,5 +1,7 @@
 import requests
 import os
+import logging
+gh_logger = logging.getLogger(__name__)
 def get_recent_commits_old(token, per_page=30):
     url = f"https://api.github.com/repos/SynthstromAudible/DelugeFirmware/commits"
     headers = {"Authorization": f"token {token}"}
@@ -60,9 +62,9 @@ def get_recent_commits(token, page=1, per_page=30, max_commits=100, commits = []
         return commits
     else:
         # Print an error message if the request was not successful
-        print(f"Error: Unable to fetch commits (status code {response.status_code})")
+        gh_logger.error(f"Unable to fetch commits (status code {response.status_code})")
         return None
-    
+
 
 def find_next_page_url(link_header):
     """
