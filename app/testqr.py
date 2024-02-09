@@ -166,6 +166,10 @@ class QRTestCase(ParametrizedTestCase):
         code, image = qr.deluge_qr("../tests/qr33.png", method=self.method, dbg=False)
         assert code == [0x2011EAA0, 0x200F5544, 0x200F5568, 0x200F3E24, 0x84CE]
 
+    def testqr34(self):
+        code, image = qr.deluge_qr("../tests/qr34.png", method=self.method, dbg=False)
+        assert code == [0X200D359C, 0X200FB50C, 0X200D2F44, 0X2011F3C8, 0X6239]
+
 if __name__ == "__main__":
     suite = unittest.TestSuite()
     suite.addTest(ParametrizedTestCase.parametrize(QRTestCase, method=qr.GRID))

@@ -639,12 +639,16 @@ def deluge_qr_img(img, method=BOTH, dbg=False):
         methods = [method]
 
     for method in methods:
-        code, comp = deluge_qr_img_method(img, method=method, dbg=dbg)
-        if len(code) == 5:
-            if all([addr == 0 or 
-                (addr > 0x20000000 and
-                 addr < 0x30000000) for addr in code[:4]] ):
-                return code, comp       
+        try:
+            code, comp = deluge_qr_img_method(img, method=method, dbg=dbg)
+            if len(code) == 5:
+                if all([addr == 0 or 
+                    (addr > 0x20000000 and
+                     addr < 0x30000000) for addr in code[:4]] ):
+                    return code, comp
+        except Exception:
+            pass
+            
     raise Exception("Failed to read a Deluge Crash pattern from the image")
 
 def deluge_qr_img_method(img, method=GRID, dbg=False):
