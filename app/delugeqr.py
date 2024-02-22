@@ -73,14 +73,14 @@ async def on_message(message):
                     _, img_encoded = cv2.imencode(".png", overlay)
                     img_bytes = img_encoded.tobytes()
                     if len(matching_commits) == 1:
-                        ghmsg = f"```git checkout {matching_commits[0]} && ./dbt build release &&"
+                        ghmsg = f"Try running \n```git checkout {matching_commits[0]} && ./dbt build release &&"
                     else:
-                        ghmsg = f"I couldn't find a recent matching commit for 0x{commit_fragment}\n```"
+                        ghmsg = f"I couldn't find a recent matching commit for 0x{commit_fragment}. Try to find one then run\n```"
 
                     command_block = f"{ghmsg}\narm-none-eabi-addr2line -Capife build/Release/deluge.elf {st}\n```"
 
                     await message.channel.send(
-                        content=f"Thanks for the image {message.author.mention}!, try running\n{command_block}"
+                        content=f"Thanks for the image {message.author.mention}! {command_block}"
                     )
 
 
