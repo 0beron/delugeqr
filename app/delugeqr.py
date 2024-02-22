@@ -73,7 +73,7 @@ async def on_message(message):
                     _, img_encoded = cv2.imencode(".png", overlay)
                     img_bytes = img_encoded.tobytes()
                     if len(matching_commits) == 1:
-                        ghmsg = f"```git checkout {matching_commits[0]} && ./dbt build release"
+                        ghmsg = f"```git checkout {matching_commits[0]} && ./dbt build release &&"
                     else:
                         ghmsg = f"I couldn't find a recent matching commit for 0x{commit_fragment}\n```"
 
