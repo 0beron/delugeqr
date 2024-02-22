@@ -13,34 +13,40 @@ intents.typing = False
 intents.presences = False
 intents.message_content = True
 
-discord_token = os.getenv('DISCORD_TOKEN')
-gh_token = os.getenv('GITHUB_TOKEN')
+discord_token = os.getenv("DISCORD_TOKEN")
+gh_token = os.getenv("GITHUB_TOKEN")
 
 gh_url = "https://github.com/SynthstromAudible/DelugeFirmware/commit/"
 
 client = discord.Client(intents=intents)
 
+
 @client.event
 async def on_ready():
-    print(f'{client.user} has connected to Discord!')
+    print(f"{client.user} has connected to Discord!")
     for guild in client.guilds:
         print(
-            f'{client.user} is connected to the following guild:\n'
-            f'{guild.name}(id: {guild.id})'
+            f"{client.user} is connected to the following guild:\n"
+            f"{guild.name}(id: {guild.id})"
         )
+
 
 @client.event
 async def on_message(message):
     # Check if the message has any attachments
     if message.author.bot:
         return
-    if message.channel.name.encode('utf-8') != b'\xf0\x9f\x8c\x99nightly-testing':
+    if message.channel.name.encode("utf-8") != b"\xf0\x9f\x8c\x99nightly-testing":
         return
     if message.attachments:
         # Check if any attachment is an image
         for attachment in message.attachments:
             print(attachment.url.lower())
-            if attachment.url.lower().split('?')[0].endswith(('png', 'jpeg', 'jpg', 'gif')):
+            if (
+                attachment.url.lower()
+                .split("?")[0]
+                .endswith(("png", "jpeg", "jpg", "gif"))
+            ):
                 # Respond with a text message
                 try:
                     code, overlay = qr.deluge_qr_url(attachment.url)
@@ -54,21 +60,28 @@ async def on_message(message):
                 if len(code) == 5:
                     st = ""
                     for fv in code[:4]:
-                        st += f"0x{fv:08x}\n"
+                        st += f"0x{fv:08x} "
                     commit_fragment = f"{code[4]:04x}"
-                    st += f"0x{commit_fragment}"
 
-                    recent_commits = github.get_recent_commits(gh_token, per_page=30, max_commits=100)
+                    recent_commits = github.get_recent_commits(
+                        gh_token, per_page=30, max_commits=100
+                    )
 
-                    matching_commits = [c for c in recent_commits if c.startswith(commit_fragment)]
-                    _, img_encoded = cv2.imencode('.png', overlay)
+                    matching_commits = [
+                        c for c in recent_commits if c.startswith(commit_fragment)
+                    ]
+                    _, img_encoded = cv2.imencode(".png", overlay)
                     img_bytes = img_encoded.tobytes()
                     if len(matching_commits) == 1:
-                        ghmsg = matching_commits[0]
+                        ghmsg = f"Try running \n```git checkout {matching_commits[0]} && ./dbt build release &&"
                     else:
-                        ghmsg = "I couldn't find a recent matching commit."
-                        
-                    await message.channel.send(content = f'Thanks for the image {message.author.mention}!, '+
-                                               f'it decodes as:\n{st}\n' + ghmsg)
-                        
+                        ghmsg = f"I couldn't find a recent matching commit for 0x{commit_fragment}. Try to find one then run\n```"
+
+                    command_block = f"{ghmsg}\narm-none-eabi-addr2line -Capife build/Release/deluge.elf {st}\n```"
+
+                    await message.channel.send(
+                        content=f"Thanks for the image {message.author.mention}! {command_block}"
+                    )
+
+
 client.run(discord_token)
