@@ -29,6 +29,9 @@ GREY = 0
 VALUE = 1
 LUMA = 2
 
+NONE = 0
+REBASELINE = 1
+FULL = 2
 
 def kpdst(kp1, kp2):
     """
@@ -644,23 +647,29 @@ def threshold_grid_section(name, img_sect, dbg):
     # with the lit pixels but this will greatly increase the std dev of the lit pixels
     mean_on, std_on = zip(*[cv.meanStdDev(gt[0], mask=gt[1]) for gt in zip(greys,thr)])
     mean_off, std_off = zip(*[cv.meanStdDev(gt[0], mask=cv.bitwise_not(gt[1])) for gt in zip(greys,thr)])
-
-
-    
+  
     h, w = img_sect.shape[:2]
     h *= 32
     w *= 32
 
+    # Get a measure of how much the histogram curves for the lit pads
+    # overlaps with the unlit ones. Too much overlap suggests actually there
+    # are no lit pads at all.
+
+    std_on_copy = list(std_on)
     bcs = [bhattacharyya_coefficient(mean_on[i], std_on[i], mean_off[i], std_off[i]) for i in range(3)]
     for i in range(3):
         if bcs[i] > 1e-2:
+            # Suspected section of grid with no pads lit
+            # Set the thresholded image to all 0
             thr[i] *= 0
+            std_on_copy[i] = 255
     
     # Pick whichever gives us the smallest std dev for lit pixels.
-    ind = std_on.index(min(std_on))
-
+    # But ignore options that have too much overlap from the test above
+    ind = std_on_copy.index(min(std_on_copy))
     
-    if dbg:
+    if dbg == FULL:
         # Plot all the above for debugging
         spacer = np.full((h, 16, 3), (255,0,0), dtype=np.uint8)
         big_bgr = cv.resize(img_sect, (w, h), interpolation= cv.INTER_NEAREST)
@@ -702,14 +711,14 @@ def threshold_grid_section(name, img_sect, dbg):
 
     return thr[ind]
 
-def deluge_qr(imgfilename, method=BOTH, dbg=True):
+def deluge_qr(imgfilename, method=BOTH, dbg=FULL, expected=None):
     """
     Reads deluge crash handler patterns from image
     files.
     """
-    return deluge_qr_img(cv.imread(imgfilename), method=method, dbg=dbg)
+    return deluge_qr_img(cv.imread(imgfilename), method=method, dbg=dbg, expected=expected)
 
-def deluge_qr_url(url, method=BOTH, dbg=False):
+def deluge_qr_url(url, method=BOTH, dbg=NONE):
     """
     Grab an image from the given URL and attempt to read a deluge
     crash handler pattern.
@@ -718,10 +727,11 @@ def deluge_qr_url(url, method=BOTH, dbg=False):
     image_bytes = response.content
     nparr = np.frombuffer(image_bytes, np.uint8)
     image = cv.imdecode(nparr, cv.IMREAD_COLOR)
-    return deluge_qr_img(image, method=method)
+    code, img, keystroke = deluge_qr_img(image, method=method)
+    return code, img
 
 
-def deluge_qr_img(img, method=BOTH, dbg=False):
+def deluge_qr_img(img, method=BOTH, dbg=NONE, expected=None):
     """
     Try both detection methods in turn to detect a deluge QR crash pattern
     """
@@ -732,19 +742,19 @@ def deluge_qr_img(img, method=BOTH, dbg=False):
 
     for method in methods:
         try:
-            code, comp = deluge_qr_img_method(img, method=method, dbg=dbg)
+            code, comp, k = deluge_qr_img_method(img, method=method, dbg=dbg, expected=expected)
             if len(code) == 5:
                 if all([addr == 0 or 
                     (addr > 0x20000000 and
                      addr < 0x30000000) for addr in code[:4]] ):
-                    return code, comp
+                    return code, comp, k
         except Exception as e:
             raise e
             #pass
-            
+
     raise Exception("Failed to read a Deluge Crash pattern from the image")
 
-def deluge_qr_img_method(img, method=GRID, dbg=False):
+def deluge_qr_img_method(img, method=GRID, dbg=NONE, expected=None):
     """
     Identifies the deluge button grid in a photo and reads
     off the crash handler pointers and github commit hash.
@@ -792,7 +802,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
 
     qrdebug.draw_cross(imc, w//2, h//2, tvect)
 
-    if dbg:
+    if dbg == FULL:
         cv.imshow("aft DMF", imc)
         cv.imshow("Thresholded Pads", dots)
         cv.imshow("TDD", d2)
@@ -824,7 +834,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
         grppnts = [gp for gp in gridpads if gp.group == grpmax and gp.u>minu+3 and gp.u < maxu-3] 
         minu, minv, maxu, maxv = extents(grppnts)
    
-    if dbg:
+    if dbg == FULL:
         qrdebug.draw("I", imdbg, pads, lambda k:str(k.i))
         qrdebug.draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
         qrdebug.draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
@@ -842,7 +852,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     # and which parts of the grid we have already found.
     wide_uvgrid = build_grid(minu-missing_u,maxu+missing_u,minv-missing_v,maxv+missing_v) 
     grid = cv.perspectiveTransform(np.array([wide_uvgrid.reshape((-1,2))]), invh).reshape(wide_uvgrid.shape)
-    if dbg:
+    if dbg == FULL:
         imcgrid = imc.copy()
         qrdebug.draw_uvgrid(imcgrid, grid, wide_uvgrid, coords=False)
         cv.imshow("sdfkjl", imcgrid)
@@ -852,7 +862,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     minu -= int(wide_uvgrid[0][0][0])
     minv -= int(wide_uvgrid[0][0][1])
 
-    if dbg:
+    if dbg == FULL:
         qrdebug.draw("U", imdbg, pads, lambda k:str(k.u if k.u is not None else " "))
         qrdebug.draw("V", imdbg, pads, lambda k:str(k.v if k.u is not None else " "))
         qrdebug.draw("I", imdbg, pads, lambda k:str(k.i))
@@ -866,7 +876,7 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     uvgrid = wide_uvgrid[minu:maxu+1, minv:maxv+1,:] 
     xygrid = grid[minu:maxu+1, minv:maxv+1,:]
 
-    if dbg:
+    if dbg == FULL:
         imblk2 = np.zeros(imc.shape, dtype=np.uint8)
         qrdebug.draw_uvgrid(imblk2, xygrid, uvgrid, coords=True)
         
@@ -1039,28 +1049,30 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     comp = cv.bitwise_or(imc, overlay)
     #pads_v_big = cv.resize(pads_v, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
     
-    if dbg:
+    if dbg == FULL:
         cv.imshow("Keypoints", imc)    
-        #cv.imshow("gr", pads_gray)
         cv.imshow("RGB", pads_bgr)
-        #cv.imshow("Val", pads_v)
-
-        #cv.imshow("Pads gray big", pads_gray_big)
         cv.imshow("Pads bgr big", pads_bgr_big)
         
-        #cv.imshow("Pads v big", pads_v_big)
-        #cv.imshow("Pads v thr big", pads_v_thr_big)
-
         cv.imshow("Grey", imdbg)
 
         cv.imshow("m", comp)
-        #cv.imshow("pads_v_big", pads_v_big)
         
         cv.imshow("Clean", imc_clean)
-
         cv.waitKey(0)
 
-    return f, comp
+    keystroke = None
+    if dbg == REBASELINE:
+        print(f, expected)
+        if f != expected:
+            cv.imshow("Clean", imc_clean)
+            cv.imshow("m", comp)
+            keystroke = cv.waitKey(0)
+        else:
+            print("Rebaseline got correct result")
+            keystroke = ord('m')
+
+    return f, comp, keystroke
 
 if __name__ == "__main__":
 
@@ -1073,8 +1085,12 @@ if __name__ == "__main__":
 
     methods = {'grid':GRID, 'hough':HOUGH, 'both':BOTH}
 
+    dbg = NONE
+    if args.debug:
+        dbg = FULL    
+
     try:
-        code, comp = deluge_qr(args.filename, method=methods[args.method], dbg=args.debug)
+        code, comp, keystroke = deluge_qr(args.filename, method=methods[args.method], dbg=dbg)
         commit_fragment = f"{code[4]:04x}"
         st = f"0x{commit_fragment}"
         print(st)
