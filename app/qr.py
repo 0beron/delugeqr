@@ -13,6 +13,9 @@ from qrdebug import circle
 import github
 import os
 from numpy.random import default_rng
+
+from qrcolours import *
+
 rng = default_rng()
 
 ERODE_HIGH = 0
@@ -21,6 +24,11 @@ ERODE_LOW = 1
 BOTH = 0
 GRID = 1
 HOUGH = 2
+
+GREY = 0
+VALUE = 1
+LUMA = 2
+
 
 def kpdst(kp1, kp2):
     """
@@ -610,6 +618,90 @@ def extents(grppnts):
     maxv = max(vs)
     return minu, minv, maxu, maxv
 
+def bhattacharyya_coefficient(mu1, sigma1, mu2, sigma2):
+    term1 = 0.25 * ((mu1 - mu2) ** 2) / (sigma1 ** 2 + sigma2 ** 2)
+    term2 = 0.5 * np.sqrt((sigma1 ** 2) / (sigma1 ** 2 + sigma2 ** 2) + (sigma2 ** 2) / (sigma1 ** 2 + sigma2 ** 2))
+    bc = np.exp(-term1) * term2
+    return bc
+
+def threshold_grid_section(name, img_sect, dbg):
+    # Try 3 ways of telling lit from unlit
+    # - overall grey value
+    # - Value from HSV
+    # - Luma from LAB
+    greys = [cv.cvtColor(img_sect, cv.COLOR_BGR2GRAY),
+             cv.cvtColor(img_sect, cv.COLOR_BGR2HSV)[:,:,2],
+             cv.cvtColor(img_sect, cv.COLOR_BGR2LAB)[:,:,0]]
+
+    # Threshold using the OTSU 2-peak histogram method
+    thr = [cv.threshold(g, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)[1] for g in greys]
+
+    # Find the standard deviation of the colours in the lit pixels
+    # A small value means the pixels are very similar in grey value, if
+    # the thresholding pulled in an incorrect pixel it will increase this value, eg
+    # if the lit pixels are all white (255), and the unlit pixels are widely spread and
+    # include some lighter values, one may be light enough for OTSU to group it
+    # with the lit pixels but this will greatly increase the std dev of the lit pixels
+    mean_on, std_on = zip(*[cv.meanStdDev(gt[0], mask=gt[1]) for gt in zip(greys,thr)])
+    mean_off, std_off = zip(*[cv.meanStdDev(gt[0], mask=cv.bitwise_not(gt[1])) for gt in zip(greys,thr)])
+
+
+    
+    h, w = img_sect.shape[:2]
+    h *= 32
+    w *= 32
+
+    bcs = [bhattacharyya_coefficient(mean_on[i], std_on[i], mean_off[i], std_off[i]) for i in range(3)]
+    for i in range(3):
+        if bcs[i] > 1e-2:
+            thr[i] *= 0
+    
+    # Pick whichever gives us the smallest std dev for lit pixels.
+    ind = std_on.index(min(std_on))
+
+    
+    if dbg:
+        # Plot all the above for debugging
+        spacer = np.full((h, 16, 3), (255,0,0), dtype=np.uint8)
+        big_bgr = cv.resize(img_sect, (w, h), interpolation= cv.INTER_NEAREST)
+        bigs = [big_bgr]
+        row2 = [big_bgr]
+        for i in range(3):
+
+            gbig = cv.cvtColor(cv.resize(greys[i], (w, h), interpolation= cv.INTER_NEAREST), cv.COLOR_GRAY2BGR)
+            tbig = cv.cvtColor(cv.resize(thr[i], (w, h), interpolation= cv.INTER_NEAREST), cv.COLOR_GRAY2BGR)
+
+            qrdebug.dbltext(gbig, ["GREY", "VALUE", "LUMA"][i], (10,30), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, "std dev on", (10,45), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, f"{std_on[i][0,0]:.2f}", (10,75), BC, 1)
+            qrdebug.dbltext(gbig, "std dev off", (10,90), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, f"{std_off[i][0,0]:.2f}", (10,120), BC, 1)
+            qrdebug.dbltext(gbig, "mean on", (10,135), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, f"{mean_on[i][0,0]:.2f}", (10,165), BC, 1)
+            qrdebug.dbltext(gbig, "mean off", (10,180), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, f"{mean_off[i][0,0]:.2f}", (10,210), BC, 1)
+            #print(f"--mean_on:{mean_on[i]}")
+            #print(f"  mean_off:{mean_off[i]}")
+            #print(f"  std_on:{std_on[i]}")
+            #print(f"  std_off:{std_off[i]}")
+            #print(abs(mean_on[i] - mean_off[i]))
+            #print(3.0*(max(std_off[i], std_on[i])))
+            #print(bcs[i])
+        
+            if i == ind:
+                qrdebug.hollow_rect(tbig, 0,0,w,h, GREEN, 6)
+            if bcs[i] > 1e-2:
+                qrdebug.hollow_rect(tbig, 0,0,w,h, RED, 3)
+
+            bigs.append(spacer)
+            bigs.append(gbig)
+            row2.append(spacer)
+            row2.append(tbig)
+
+        cv.imshow(f"{name}", cv.vconcat([cv.hconcat(bigs), cv.hconcat(row2)]))
+
+    return thr[ind]
+
 def deluge_qr(imgfilename, method=BOTH, dbg=True):
     """
     Reads deluge crash handler patterns from image
@@ -646,8 +738,9 @@ def deluge_qr_img(img, method=BOTH, dbg=False):
                     (addr > 0x20000000 and
                      addr < 0x30000000) for addr in code[:4]] ):
                     return code, comp
-        except Exception:
-            pass
+        except Exception as e:
+            raise e
+            #pass
             
     raise Exception("Failed to read a Deluge Crash pattern from the image")
 
@@ -877,22 +970,17 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
 
     out = [0]*18
 
-    #for gp in grid[0]:
-    #    cv.circle(imc, (int(gp[0]), int(gp[1])), 7, (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
-    
-    pads_v = cv.cvtColor(pads_bgr, cv.COLOR_BGR2HSV)[:,:,2]
-    pads_grey = cv.cvtColor(pads_bgr, cv.COLOR_BGR2GRAY)
+    quarters = [pads_bgr[:,4*x:4*x+4] for x in range(4)]
+    sidebar = pads_bgr[:,-2:]
 
-    vrms = pads_v.std()
-    grms = pads_grey.std()
+    pieces = []
+    for i, q in enumerate(quarters):
+        pieces.append(threshold_grid_section(f"PADS{i}", q, dbg))
 
-    #pg_big = cv.resize(pads_grey, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    #cv.imshow(f"PG", pg_big)
-    if vrms > grms:
-        r, pads_v_threshold = cv.threshold(pads_v, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
-    else:
-        r, pads_v_threshold = cv.threshold(pads_grey, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)
+    pieces.append(threshold_grid_section(f"SIDE0", sidebar, dbg))
 
+    pads_v_threshold = cv.hconcat(pieces)
+        
     for ix in range(18):
         for iy in range(8):
             if pads_v_threshold[iy][ix] > 128:
@@ -937,10 +1025,10 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
         y2 = int(bp[i*2+1][1])
         cv.line(imc, (x,y), (x2,y2), (0, 255, 255), thickness=4, lineType=cv.LINE_AA)
 
-    pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    #pads_gray_big = cv.resize(pads_gray, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
     pads_bgr_big = cv.resize(pads_bgr, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    pads_v_big = cv.resize(pads_v, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
-    pads_v_thr_big = cv.resize(pads_v_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    #pads_v_big = cv.resize(pads_v, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
+    #pads_v_thr_big = cv.resize(pads_v_threshold, (18*32, 8*32), interpolation= cv.INTER_NEAREST)
 
     pads_shifted = np.zeros((8, 19), dtype=np.uint8)
     pads_shifted[0:8,0:16] = pads_v_threshold[0:8,0:16]
@@ -953,22 +1041,21 @@ def deluge_qr_img_method(img, method=GRID, dbg=False):
     
     if dbg:
         cv.imshow("Keypoints", imc)    
-        cv.imshow("gr", pads_gray)
+        #cv.imshow("gr", pads_gray)
         cv.imshow("RGB", pads_bgr)
-        cv.imshow("Val", pads_v)
+        #cv.imshow("Val", pads_v)
 
-        cv.imshow("Pads gray big", pads_gray_big)
+        #cv.imshow("Pads gray big", pads_gray_big)
         cv.imshow("Pads bgr big", pads_bgr_big)
         
-        cv.imshow("Pads v big", pads_v_big)
-        cv.imshow("Pads v thr big", pads_v_thr_big)
+        #cv.imshow("Pads v big", pads_v_big)
+        #cv.imshow("Pads v thr big", pads_v_thr_big)
 
         cv.imshow("Grey", imdbg)
-      
 
         cv.imshow("m", comp)
-        cv.imshow("pads_v_big", pads_v_big)
-
+        #cv.imshow("pads_v_big", pads_v_big)
+        
         cv.imshow("Clean", imc_clean)
 
         cv.waitKey(0)
