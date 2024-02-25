@@ -7,17 +7,35 @@ import cv2 as cv
 
 methods = ['BOTH', 'GRID', 'HOUGH']
 
+def fields(test):
+    st = ""
+    for k in test.fields:
+        st+=(f"  {k}: {test.__dict__[k]}\n")
+    return st
+
+class MyTestResult(unittest.TextTestResult):
+    def addFailure(self, test, err):
+        self.failed = True
+        super().addError(test, err)
+        t, formatted_err = self.errors.pop()
+        formatted_err = fields(test)+formatted_err
+        super().addFailure(test, err)
+
+    def addError(self, test, err):
+        self.errored = True
+        super().addError(test, err)
+        t, formatted_err = self.errors.pop()
+        formatted_err = fields(test)+formatted_err
+        self.errors.append((test, formatted_err))
+
 class ParametrizedTestCase(unittest.TestCase):
     """ TestCase classes that want to be parametrized should
         inherit from this class.
     """
     def __init__(self, methodName='runTest', **kwargs):
         super(ParametrizedTestCase, self).__init__(methodName)
+        self.fields = list(kwargs.keys())
         self.__dict__.update(kwargs)
-        #self.method = method
-        #self.filename = filename
-        #self.code = code
-        #self.rebaseline = rebaseline
 
     @staticmethod
     def parametrize(testcase_klass, **kwargs):
@@ -44,11 +62,13 @@ class QRTestCase(ParametrizedTestCase):
     def setUp(self):
         """Call before every test case."""
         print(f"{self.filename, methods[self.method]}")
-
+        
     def tearDown(self):
         if self.rebaseline:
-            print(self.found_code, self.code, self.prevstatus)
-            if self.found_code == self.code and self.prevstatus == "PASS":
+            if not hasattr(self, "found_code"):
+                status = "ERROR"
+                self.found_code = [0]*5
+            elif self.found_code == self.code and self.prevstatus == "PASS":
                 status = "PASS"
             else:
                 w, h = self.image.shape[:2]
@@ -137,6 +157,6 @@ if __name__ == "__main__":
                     rebaseline=args.rebaseline,
                     outputfp=outputfp))
 
-    unittest.TextTestRunner(verbosity=2).run(suite)
+    unittest.TextTestRunner(verbosity=2, resultclass=MyTestResult).run(suite)
     if outputfp is not None:
         outputfp.close()
