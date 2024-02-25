@@ -82,7 +82,7 @@ class QRTestCase(ParametrizedTestCase):
     
 def read_codes():
     allcodes = {}
-    with open("codes.txt", "r") as fp:
+    with open("../tests/codes.txt", "r") as fp:
         for line in fp:
             bits = line.split()
             status = bits[2]
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     methodlist = method_map[args.method]
 
     names = os.listdir("../tests")
-    
+    names.remove("codes.txt")
     names.sort(key=lambda f:int(''.join(filter(lambda c:c.isdigit(), f))))
 
     expected_codes = read_codes()
