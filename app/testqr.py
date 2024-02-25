@@ -2,6 +2,8 @@ import unittest
 import argparse
 import os
 import qr
+from dataclasses import dataclass, astuple
+import cv2 as cv
 
 methods = ['BOTH', 'GRID', 'HOUGH']
 
@@ -45,21 +47,31 @@ class QRTestCase(ParametrizedTestCase):
 
     def tearDown(self):
         if self.rebaseline:
-            statuses = {ord('p'):"PASS", ord('f'):"FAIL", ord('x'):"XFAIL", ord('m'):"MATCH"}
-            if self.keystroke in statuses:
-                status = statuses[self.keystroke]
+            print(self.found_code, self.code, self.prevstatus)
+            if self.found_code == self.code and self.prevstatus == "PASS":
+                status = "PASS"
             else:
-                status = "UNKNOWN"
+                w, h = self.image.shape[:2]
+                img1 = cv.imread(f"../tests/{self.filename}")
+                clean_img = cv.resize(cv.imread(f"../tests/{self.filename}"),
+                                      (h,w), interpolation= cv.INTER_LINEAR)
+
+                cv.imshow("Input", clean_img)
+                cv.imshow("Result", self.image)
+                keystroke = cv.waitKey(0)
+                
+                statuses = {ord('p'):"PASS", ord('f'):"FAIL", ord('x'):"XFAIL"}
+                if keystroke in statuses:
+                    status = statuses[keystroke]
+                else:
+                    status = "UNKNOWN"
+                
             self.outputfp.write(f"{self.filename} {methods[self.method]} {status} {format_code(self.found_code)}\n")
 
     def testqr(self):
         """Test QR"""
-        if self.rebaseline:
-            dbg = qr.REBASELINE
-        else:
-            dbg = qr.NONE
-        self.found_code, self.image, self.keystroke = \
-            qr.deluge_qr(f"../tests/{self.filename}", method=self.method, dbg=dbg, expected=self.code)
+        self.found_code, self.image = \
+            qr.deluge_qr(f"../tests/{self.filename}", method=self.method, dbg=False)
         self.assertEqual(self.found_code, self.code, self.failMessage())
 
     def failMessage(self):
@@ -74,7 +86,7 @@ def read_codes():
         for line in fp:
             bits = line.split()
             status = bits[2]
-            allcodes[(bits[0], bits[1])] = [int(hx,16) for hx in bits[3:]]
+            allcodes[(bits[0], bits[1])] = (bits[2], [int(hx,16) for hx in bits[3:]])
 
     return allcodes
 
@@ -111,15 +123,17 @@ if __name__ == "__main__":
                     continue
             key = (name, methods[method])
             if key in expected_codes:
-                expected_code = expected_codes[key]
+                status, expected_code = expected_codes[key]
             else:
                 expected_code = None
+                status = "UNKNOWN"
             suite.addTest(
                 ParametrizedTestCase.parametrize(
                     QRTestCase,
                     method=method,
                     filename=name,
                     code=expected_code,
+                    prevstatus=status,
                     rebaseline=args.rebaseline,
                     outputfp=outputfp))
 
