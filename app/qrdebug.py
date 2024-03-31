@@ -1,6 +1,7 @@
 img_clean = None
 import cv2 as cv
 from qrcolours import *
+import numpy as np
 
 FHS = cv.FONT_HERSHEY_SIMPLEX
 
@@ -48,6 +49,32 @@ def hollow_rect(img, x, y, w, h, c, t):
     cv.line(img, (x+w,y+h), (x+w,y), c, 6)
     cv.line(img, (x+w,y), (x,y), c, t)
 
+def fill_subrectangle_with_checkerboard(image, x, y, w, h):
+    # Define the size of each square in the checkerboard
+    square_size = 8
+
+    # Create a small sub-image containing four checkerboard squares
+    checkerboard_subimage = np.zeros((2 * square_size, 2 * square_size, 3), dtype=np.uint8)
+
+    # Fill the sub-image with the checkerboard pattern
+    checkerboard_subimage[:square_size, :square_size, :] = 64
+    checkerboard_subimage[:square_size, square_size:, :] = 128
+    checkerboard_subimage[square_size:, :square_size, :] = 128
+    checkerboard_subimage[square_size:, square_size:, :] = 64
+
+    # Repeat the sub-image to create a checkerboard pattern covering the subrectangle
+    num_tiles_x = w // (2 * square_size) + 1
+    num_tiles_y = h // (2 * square_size) + 1
+    tiled_checkerboard = np.tile(checkerboard_subimage, (num_tiles_y, num_tiles_x, 1))
+
+    # Trim the excess pixels if the tiled pattern is larger than the subrectangle
+    tiled_checkerboard = tiled_checkerboard[:h, :w]
+
+    # Copy the tiled checkerboard pattern to the specified subrectangle of the input image
+    image[y:y+h, x:x+w] = tiled_checkerboard[:h, :w]
+
+    return image
+    
 def text(img, text, xy, c, t = 1, size = 1.0):
     cv.putText(img, text, xy, FHS, size, c, t, cv.LINE_AA)
 

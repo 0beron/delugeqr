@@ -25,13 +25,6 @@ BOTH = 0
 GRID = 1
 HOUGH = 2
 
-GREY = 0
-VALUE = 1
-LUMA = 2
-
-
-BC_THRESHOLD = 2e-2
-
 def kpdst(kp1, kp2):
     """
     Euclidean distance between 2 cv.KeyPoints
@@ -627,16 +620,36 @@ def bhattacharyya_coefficient(mu1, sigma1, mu2, sigma2):
     return bc
 
 def threshold_grid_section(name, img_sect, dbg):
-    # Try 3 ways of telling lit from unlit
+    # Try 4 ways of telling lit from unlit
     # - overall grey value
+    # - Saturation from HSV
     # - Value from HSV
     # - Luma from LAB
+
+    GREY, SATURATION, VALUE, LUMA = 0,1,2,3    
+    
     greys = [cv.cvtColor(img_sect, cv.COLOR_BGR2GRAY),
+             cv.cvtColor(img_sect, cv.COLOR_BGR2HSV)[:,:,1],
              cv.cvtColor(img_sect, cv.COLOR_BGR2HSV)[:,:,2],
              cv.cvtColor(img_sect, cv.COLOR_BGR2LAB)[:,:,0]]
 
+    nchannels = len(greys)  
+    bc_thresholds = [2e-2] * nchannels
+    bc_thresholds[SATURATION] = 1e-5, # Demand better separation in saturation
+    ignore = [False]*nchannels   
+    
     # Threshold using the OTSU 2-peak histogram method
     thr = [cv.threshold(g, 128, 255, cv.THRESH_BINARY+cv.THRESH_OTSU)[1] for g in greys]
+
+    w, h, d = img_sect.shape
+
+    # If the saturation result looks like the inverse of the value result,
+    # trust value and invert the saturation result.
+    # For high ambient light, the unlit pads are grey and lit ones are coloured.
+    # For low ambient light, unlit pads get coloured by their lit neighbours
+    # while the unlit pads blow out to white.
+    if np.sum(cv.bitwise_xor(thr[1], thr[2])) > (w*h*250.0):
+        thr[1] = cv.bitwise_not(thr[1])
 
     # Find the standard deviation of the colours in the lit pixels
     # A small value means the pixels are very similar in grey value, if
@@ -646,7 +659,7 @@ def threshold_grid_section(name, img_sect, dbg):
     # with the lit pixels but this will greatly increase the std dev of the lit pixels
     mean_on, std_on = zip(*[cv.meanStdDev(gt[0], mask=gt[1]) for gt in zip(greys,thr)])
     mean_off, std_off = zip(*[cv.meanStdDev(gt[0], mask=cv.bitwise_not(gt[1])) for gt in zip(greys,thr)])
-  
+
     h, w = img_sect.shape[:2]
     h *= 32
     w *= 32
@@ -656,14 +669,24 @@ def threshold_grid_section(name, img_sect, dbg):
     # are no lit pads at all.
 
     std_on_copy = list(std_on)
-    bcs = [bhattacharyya_coefficient(mean_on[i], std_on[i], mean_off[i], std_off[i]) for i in range(3)]
-    for i in range(3):
-        if bcs[i] > BC_THRESHOLD:
+    bcs = [bhattacharyya_coefficient(mean_on[i], std_on[i], mean_off[i], std_off[i]) for i in range(nchannels)]
+    for i in range(nchannels):
+        if bcs[i] > bc_thresholds[i] or (mean_on[i] < 10 and mean_off[i] < 10):
+            ignore[i] = True
+
+    # If saturation is the only result that gives a split between lit and unlit,
+    # don't trust it either. It can cause blocks of pads that are all unlit, but
+    # catch a tiny amount of colour from a neighbour being wrongly classified.
+    if ignore.count(False) == 1 and not ignore[SATURATION]:
+        ignore[SATURATION] = True
+
+    for i in range(nchannels):
+        if ignore[i]:
             # Suspected section of grid with no pads lit
             # Set the thresholded image to all 0
             thr[i] *= 0
             std_on_copy[i] = 255
-    
+        
     # Pick whichever gives us the smallest std dev for lit pixels.
     # But ignore options that have too much overlap from the test above
     ind = std_on_copy.index(min(std_on_copy))
@@ -674,12 +697,12 @@ def threshold_grid_section(name, img_sect, dbg):
         big_bgr = cv.resize(img_sect, (w, h), interpolation= cv.INTER_NEAREST)
         bigs = [big_bgr]
         row2 = [big_bgr]
-        for i in range(3):
+        for i in range(nchannels):
 
             gbig = cv.cvtColor(cv.resize(greys[i], (w, h), interpolation= cv.INTER_NEAREST), cv.COLOR_GRAY2BGR)
             tbig = cv.cvtColor(cv.resize(thr[i], (w, h), interpolation= cv.INTER_NEAREST), cv.COLOR_GRAY2BGR)
 
-            qrdebug.dbltext(gbig, ["GREY", "VALUE", "LUMA"][i], (10,30), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, ["GREY", "SAT", "VALUE", "LUMA"][i], (10,30), BC, 1, size=0.5)
             qrdebug.dbltext(gbig, "std dev on", (10,45), BC, 1, size=0.5)
             qrdebug.dbltext(gbig, f"{std_on[i][0,0]:.2f}", (10,75), BC, 1)
             qrdebug.dbltext(gbig, "std dev off", (10,90), BC, 1, size=0.5)
@@ -688,7 +711,7 @@ def threshold_grid_section(name, img_sect, dbg):
             qrdebug.dbltext(gbig, f"{mean_on[i][0,0]:.2f}", (10,165), BC, 1)
             qrdebug.dbltext(gbig, "mean off", (10,180), BC, 1, size=0.5)
             qrdebug.dbltext(gbig, f"{mean_off[i][0,0]:.2f}", (10,210), BC, 1)
-            qrdebug.dbltext(gbig, f"BC: {bcs[i][0,0]}", (10,240), BC, 1, size=0.5)
+            qrdebug.dbltext(gbig, f"BC: {bcs[i][0,0]:.2e}", (10,240), BC, 1, size=0.5)
             #print(f"--mean_on:{mean_on[i]}")
             #print(f"  mean_off:{mean_off[i]}")
             #print(f"  std_on:{std_on[i]}")
@@ -699,8 +722,9 @@ def threshold_grid_section(name, img_sect, dbg):
         
             if i == ind:
                 qrdebug.hollow_rect(tbig, 0,0,w,h, GREEN, 6)
-            if bcs[i] > BC_THRESHOLD:
-                qrdebug.hollow_rect(tbig, 0,0,w,h, RED, 3)
+            if ignore[i]:
+                qrdebug.fill_subrectangle_with_checkerboard(tbig, 0,0,w,h)
+                #qrdebug.hollow_rect(tbig, 0,0,w,h, RED, 3)
 
             bigs.append(spacer)
             bigs.append(gbig)
